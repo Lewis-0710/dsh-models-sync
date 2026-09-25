@@ -1,0 +1,3 @@
+- insert:
+    - id: dsh-models-sync
+      name: 'dsh-models-sync'
