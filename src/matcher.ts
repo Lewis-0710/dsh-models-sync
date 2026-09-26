@@ -1,6 +1,36 @@
 import type { ModelsDevEntry, ModelInfo } from './types.ts'
 
 /**
+ * 去除模型 ID 或别名中的 free 标识
+ * 例如：
+ * - muse-spark-1.2-contributor-free -> muse-spark-1.2-contributor
+ * - mimo-v2.6-flash-free -> mimo-v2.6-flash
+ * - ling-3.0-flash-fin-free -> ling-3.0-flash-fin
+ * - mimo-v2.6-flash (Free) -> mimo-v2.6-flash
+ * - free-mimo-v2.6-flash -> mimo-v2.6-flash
+ */
+export function stripFree(str: string): string {
+  if (!str) return ''
+  if (!/\bfree\b|[-_.]free|free[-_.]/i.test(str)) {
+    return str
+  }
+
+  let cleaned = str
+    // 去除括号修饰：(free), [free], 【free】
+    .replace(/[\(\[\{【（]\s*free\s*[\)\]\}】）]/gi, '')
+    // 去除前后带分隔符或位于边界的 free：例如 -free, _free, free-, free_, 以及独立单词 free
+    .replace(/(^|[-_.\s])free(?=[-_.\s]|$)/gi, '')
+    // 压缩重复的破折号/下划线/空格，如 -- 变成 -
+    .replace(/[-]{2,}/g, '-')
+    .replace(/[_]{2,}/g, '_')
+    .replace(/\s{2,}/g, ' ')
+    // 去除首尾留下的分隔符或空格
+    .replace(/^[-_.\s]+|[-_.\s]+$/g, '')
+
+  return cleaned || str
+}
+
+/**
  * 提取去前缀去噪音的纯模型标识
  */
 export function cleanId(raw: string): string {
@@ -8,8 +38,9 @@ export function cleanId(raw: string): string {
   const trimmed = raw.trim().toLowerCase()
   // 去除命名空间，如 'openai/gpt-4o' -> 'gpt-4o'
   const bare = trimmed.includes('/') ? trimmed.slice(trimmed.lastIndexOf('/') + 1) : trimmed
-  // 去除常见包装后缀
-  return bare.replace(/-openai-compact$/, '').replace(/:\w+$/, '')
+  // 去除常见包装后缀并去除 free 标识
+  const stripped = stripFree(bare)
+  return stripped.replace(/-openai-compact$/, '').replace(/:\w+$/, '')
 }
 
 /**
@@ -85,14 +116,22 @@ export function matchModel(
   modelName: string,
   catalog: ModelsDevEntry[]
 ): MatchResult {
-  const rawIdClean = cleanId(modelId)
-  const rawNameClean = cleanId(modelName)
+  // 规则：如果模型ID或别名中包含 free，先去掉 free 后再使用 models.dev 匹配元数据
+  const strippedId = stripFree(modelId)
+  const strippedName = stripFree(modelName)
+  const hadFree = (strippedId && strippedId !== modelId) || (strippedName && strippedName !== modelName)
+
+  const effectiveId = strippedId || modelId
+  const effectiveName = strippedName || modelName
+
+  const rawIdClean = cleanId(effectiveId)
+  const rawNameClean = cleanId(effectiveName)
 
   // ==========================================
-  // 优先级 1：先使用模型 ID 和 models.dev 匹配
+  // 优先级 1：先使用模型 ID（已去除 free）和 models.dev 匹配
   // ==========================================
   // 1.1 精确匹配 id
-  let hit = catalog.find(m => m.id.toLowerCase() === modelId.toLowerCase())
+  let hit = catalog.find(m => m.id.toLowerCase() === effectiveId.toLowerCase() || m.id.toLowerCase() === modelId.toLowerCase())
   if (!hit) {
     // 1.2 去命名空间前缀匹配
     hit = catalog.find(m => cleanId(m.id) === rawIdClean)
@@ -102,14 +141,15 @@ export function matchModel(
       entry: hit,
       matchedVia: 'id',
       matchedId: hit.id,
+      fallbackNote: hadFree ? '已自动去除 free 标识成功匹配元数据' : undefined,
     }
   }
 
   // ==========================================
-  // 优先级 2：如果匹配不到就使用模型别名去匹配
+  // 优先级 2：如果匹配不到就使用模型别名（已去除 free）去匹配
   // ==========================================
-  if (modelName && modelName.trim() && modelName !== modelId) {
-    hit = catalog.find(m => m.name.toLowerCase() === modelName.toLowerCase())
+  if (effectiveName && effectiveName.trim() && effectiveName !== effectiveId) {
+    hit = catalog.find(m => m.name.toLowerCase() === effectiveName.toLowerCase() || (modelName && m.name.toLowerCase() === modelName.toLowerCase()))
     if (!hit) {
       hit = catalog.find(m => cleanId(m.name) === rawNameClean || cleanId(m.id) === rawNameClean)
     }
@@ -118,6 +158,7 @@ export function matchModel(
         entry: hit,
         matchedVia: 'alias',
         matchedId: hit.id,
+        fallbackNote: hadFree ? '已自动去除 free 标识成功匹配元数据' : undefined,
       }
     }
   }
