@@ -94,9 +94,7 @@ export function apply(ctx: Context): void {
           for (const group of cachedGroups) {
             for (const model of group.models) {
               const match = matchModel(model.id, model.name, catalog)
-              if (match.entry) {
-                applyMatchToModel(model, match)
-              }
+              applyMatchToModel(model, match)
             }
           }
 
@@ -135,10 +133,8 @@ export function apply(ctx: Context): void {
             }
             for (const model of group.models) {
               const match = matchModel(model.id, model.name, catalog)
-              if (match.entry) {
-                applyMatchToModel(model, match)
-                updatedCount++
-              }
+              applyMatchToModel(model, match)
+              updatedCount++
             }
           }
 

@@ -87,13 +87,95 @@ function parseLatestQuery(id: string): { prefix: string; variant: string } {
 /**
  * 获取同族词干（去掉常见的变体修饰后缀）
  * 如 'mimo-2.7-flash' -> 'mimo-2.7'
+ * 如 'mimo-v2.5-luna' -> 'mimo-v2.5'
+ * 如 'mimo-v2.5-ds' -> 'mimo-v2.5'
+ * 如 'mimo-v2.5-pro-ultraspeed' -> 'mimo-v2.5'
  * 如 'qwen3.8-max' -> 'qwen3.8'
  */
-function getFamilyStem(id: string): string {
-  const c = cleanId(id)
+export function getFamilyStem(id: string): string {
+  let c = cleanId(id)
+  const pattern = /-(flash|turbo|pro|plus|max|lite|mini|chat|thinking|preview|code|sg|volc|next|prime|luna|ds|vl|vision|omni|base|instruct|online|search|reasoner|speed|ultraspeed|audio|voice|moe|exp|free)$/i
+  
+  // 连续剥离变体后缀（最多连续剥离 4 次）
+  for (let i = 0; i < 4; i++) {
+    const next = c.replace(pattern, '')
+    if (next === c) break
+    c = next
+  }
   return c
-    .replace(/-(flash|turbo|pro|plus|max|lite|mini|chat|thinking|preview|code|sg|volc|next|prime)$/i, '')
-    .replace(/-(flash|turbo|pro|plus|max|lite|mini|chat|thinking|preview|code|sg|volc|next|prime)$/i, '') // 容许多重后缀
+}
+
+/**
+ * 动态判断模型是否原生具备图片/视觉等多模态输入能力
+ * 基于架构族特征与命名规范通用推导，零硬编码单个孤立模型
+ */
+export function isNativeVisionModel(modelId: string, modelName = ''): boolean {
+  const text = `${modelId} ${modelName}`.toLowerCase()
+
+  // 1. 显式带有多模态视觉特征标记：vl, vision, omni, multimodal, 4v, 4o, visual
+  if (/(^|[-_.\s])(vl|vision|omni|multimodal|visual|4v|4o)([-_.\s]|$)/i.test(text)) {
+    return true
+  }
+
+  // 2. 原生全系视觉的模型家族：
+  // - 小米 MiMo-2.5 / MiMo-2.6 及以上全系列架构均为原生多模态视觉基座
+  if (/mimo[-_.](v?2\.[5-9]|v?[3-9])/i.test(text)) {
+    return true
+  }
+
+  // - Google Gemini 1.5 / 2.0 / 2.5 全系多模态视觉
+  if (/gemini[-_.](1\.5|2\.[0-9]|2\.5|[3-9])/i.test(text)) {
+    return true
+  }
+
+  // - Anthropic Claude 3 / 3.5 / 3.7 全系多模态视觉
+  if (/claude[-_.](3|3\.5|3\.7|[4-9])/i.test(text)) {
+    return true
+  }
+
+  // - OpenAI GPT-4o / GPT-4.5 / GPT-5 全系多模态视觉
+  if (/gpt[-_.]?(4o|4\.5|5)/i.test(text)) {
+    return true
+  }
+
+  return false
+}
+
+/**
+ * 从多个候选 models.dev 条目中优选最完整、质量最高的条目（避免被残缺的纯文本脏数据覆盖多模态能力）
+ */
+export function pickBestEntry(entries: ModelsDevEntry[]): ModelsDevEntry | undefined {
+  if (entries.length === 0) return undefined
+  if (entries.length === 1) return entries[0]
+
+  return [...entries].sort((a, b) => {
+    let scoreA = 0
+    let scoreB = 0
+
+    // 1. 多模态视觉支持最为核心：支持 image 的赋予高权重
+    if (a.input && a.input.includes('image')) scoreA += 25
+    if (b.input && b.input.includes('image')) scoreB += 25
+
+    // 2. 原厂/官方 Provider 优先（如 xiaomi, openai, anthropic, google, zhipu 等）
+    const isOfficialA = a.provider && ['xiaomi', 'openai', 'anthropic', 'google', 'zhipu', 'meta', 'deepseek', 'mistral', 'qwen', 'aliyun'].includes(a.provider.toLowerCase())
+    const isOfficialB = b.provider && ['xiaomi', 'openai', 'anthropic', 'google', 'zhipu', 'meta', 'deepseek', 'mistral', 'qwen', 'aliyun'].includes(b.provider.toLowerCase())
+    if (isOfficialA) scoreA += 15
+    if (isOfficialB) scoreB += 15
+
+    // 3. 具备有效 contextWindow
+    if (a.contextWindow && a.contextWindow > 0) scoreA += 10
+    if (b.contextWindow && b.contextWindow > 0) scoreB += 10
+
+    // 4. 具备思考等级信息
+    if (Array.isArray(a.thinkingLevels) && a.thinkingLevels.length > 0) scoreA += 5
+    if (Array.isArray(b.thinkingLevels) && b.thinkingLevels.length > 0) scoreB += 5
+
+    // 5. 具备 maxOutput
+    if (a.maxOutput && a.maxOutput > 0) scoreA += 3
+    if (b.maxOutput && b.maxOutput > 0) scoreB += 3
+
+    return scoreB - scoreA
+  })[0]
 }
 
 export interface MatchResult {
@@ -131,11 +213,15 @@ export function matchModel(
   // 优先级 1：先使用模型 ID（已去除 free）和 models.dev 匹配
   // ==========================================
   // 1.1 精确匹配 id
-  let hit = catalog.find(m => m.id.toLowerCase() === effectiveId.toLowerCase() || m.id.toLowerCase() === modelId.toLowerCase())
+  const exactCandidates = catalog.filter(m => m.id.toLowerCase() === effectiveId.toLowerCase() || m.id.toLowerCase() === modelId.toLowerCase())
+  let hit = pickBestEntry(exactCandidates)
+
   if (!hit) {
     // 1.2 去命名空间前缀匹配
-    hit = catalog.find(m => cleanId(m.id) === rawIdClean)
+    const noNsCandidates = catalog.filter(m => cleanId(m.id) === rawIdClean)
+    hit = pickBestEntry(noNsCandidates)
   }
+
   if (hit) {
     return {
       entry: hit,
@@ -149,10 +235,14 @@ export function matchModel(
   // 优先级 2：如果匹配不到就使用模型别名（已去除 free）去匹配
   // ==========================================
   if (effectiveName && effectiveName.trim() && effectiveName !== effectiveId) {
-    hit = catalog.find(m => m.name.toLowerCase() === effectiveName.toLowerCase() || (modelName && m.name.toLowerCase() === modelName.toLowerCase()))
+    const aliasExactCandidates = catalog.filter(m => m.name.toLowerCase() === effectiveName.toLowerCase() || (modelName && m.name.toLowerCase() === modelName.toLowerCase()))
+    hit = pickBestEntry(aliasExactCandidates)
+
     if (!hit) {
-      hit = catalog.find(m => cleanId(m.name) === rawNameClean || cleanId(m.id) === rawNameClean)
+      const aliasCleanCandidates = catalog.filter(m => cleanId(m.name) === rawNameClean || cleanId(m.id) === rawNameClean)
+      hit = pickBestEntry(aliasCleanCandidates)
     }
+
     if (hit) {
       return {
         entry: hit,
@@ -202,11 +292,12 @@ export function matchModel(
   // ==========================================
   const familyStem = getFamilyStem(rawIdClean)
   if (familyStem && familyStem !== rawIdClean) {
-    // 寻找同族模型（如 mimo-2.7-flash 寻找 mimo-2.7）
-    hit = catalog.find(m => {
+    // 寻找同族模型（如 mimo-v2.5-luna / mimo-2.7-flash 寻找同族模型）
+    const familyCandidates = catalog.filter(m => {
       const mClean = cleanId(m.id)
       return mClean === familyStem || getFamilyStem(mClean) === familyStem
     })
+    hit = pickBestEntry(familyCandidates)
 
     if (hit) {
       return {
@@ -222,11 +313,13 @@ export function matchModel(
   if (modelName && modelName.trim()) {
     const nameStem = getFamilyStem(rawNameClean)
     if (nameStem && nameStem !== rawNameClean) {
-      hit = catalog.find(m => {
+      const nameFamilyCandidates = catalog.filter(m => {
         const mClean = cleanId(m.id)
         const mNameClean = cleanId(m.name)
         return mClean === nameStem || mNameClean === nameStem || getFamilyStem(mClean) === nameStem
       })
+      hit = pickBestEntry(nameFamilyCandidates)
+
       if (hit) {
         return {
           entry: hit,
@@ -249,6 +342,13 @@ export function matchModel(
 export function applyMatchToModel(model: ModelInfo, match: MatchResult): boolean {
   if (!match.entry) {
     model.matchedVia = 'none'
+    // 即使未匹配到 models.dev，根据原生模型家族通用特征自适应推导多模态能力
+    if (isNativeVisionModel(model.id, model.name)) {
+      model.supportsImages = true
+      const curInputs = Array.isArray(model.input) ? [...model.input] : ['text']
+      if (!curInputs.includes('image')) curInputs.push('image')
+      model.input = curInputs
+    }
     return false
   }
 
@@ -263,8 +363,29 @@ export function applyMatchToModel(model: ModelInfo, match: MatchResult): boolean
   if (entry.maxOutput !== undefined && entry.maxOutput > 0) {
     model.maxOutput = entry.maxOutput
   }
-  model.supportsImages = entry.input.includes('image')
+
+  // 多模态图片支持判断：优先采纳 entry 声明，结合原生多模态视觉家族自适应兜底
+  let supportsImages = entry.input.includes('image')
+  if (!supportsImages && isNativeVisionModel(model.id, model.name || entry.name)) {
+    supportsImages = true
+  }
+
+  model.supportsImages = supportsImages
   model.supportsText = entry.input.includes('text') || true
+
+  // 维护完整的 input 模态列表
+  const mergedInputs = ['text']
+  if (supportsImages) {
+    mergedInputs.push('image')
+  }
+  if (Array.isArray(entry.input)) {
+    for (const item of entry.input) {
+      if (item !== 'text' && item !== 'image' && !mergedInputs.includes(item)) {
+        mergedInputs.push(item)
+      }
+    }
+  }
+  model.input = mergedInputs
 
   // 根据 models.dev 与现有支持动态计算实际支持的思考等级
   const devLevels = Array.isArray(entry.thinkingLevels) ? entry.thinkingLevels : []

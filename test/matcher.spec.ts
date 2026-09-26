@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { matchModel } from '../src/matcher.ts'
+import { matchModel, applyMatchToModel } from '../src/matcher.ts'
 import type { ModelsDevEntry } from '../src/types.ts'
 
 const mockCatalog: ModelsDevEntry[] = [
@@ -75,6 +75,36 @@ const mockCatalog: ModelsDevEntry[] = [
     input: ['text'],
     thinkingLevels: [],
   },
+  // 模拟 models.dev 中存在第三方残缺脏数据的情况
+  {
+    id: 'vercel/mimo-v2.5-pro',
+    name: 'MiMo V2.5 Pro',
+    provider: 'vercel',
+    contextWindow: 128000,
+    maxOutput: 8192,
+    input: ['text'], // 脏数据只写了 text
+    thinkingLevels: [],
+  },
+  // 模拟 models.dev 中官方完整多模态数据
+  {
+    id: 'xiaomi/mimo-v2.5-pro',
+    name: 'MiMo-V2.5-Pro',
+    provider: 'xiaomi',
+    contextWindow: 1000000,
+    maxOutput: 65536,
+    input: ['text', 'image', 'audio', 'video'],
+    thinkingLevels: ['low', 'medium', 'high'],
+  },
+  // 模拟 mimo-v2.5 基座模型
+  {
+    id: 'xiaomi/mimo-v2.5',
+    name: 'MiMo-V2.5',
+    provider: 'xiaomi',
+    contextWindow: 1000000,
+    maxOutput: 65536,
+    input: ['text', 'image', 'audio', 'video'],
+    thinkingLevels: ['low', 'medium', 'high'],
+  },
 ]
 
 describe('4级优先级模型匹配逻辑测试', () => {
@@ -141,6 +171,48 @@ describe('4级优先级模型匹配逻辑测试', () => {
     const resAlias = matchModel('unknown-id-xyz', 'MiMo-V2.6-Flash (Free)', mockCatalog)
     expect(resAlias.matchedVia).toBe('alias')
     expect(resAlias.matchedId).toBe('XiaomiMiMo/MiMo-V2.6-Flash')
+  })
+
+  it('mimo-2.5 全系列模型自动勾选图片与多模态优选测试', () => {
+    // 1. mimo-v2.5-pro：验证即使存在第三方纯文本脏数据，也能加权优选到官方多模态条目并勾选图片
+    const matchPro = matchModel('mimo-v2.5-pro', 'mimo-v2.5-pro', mockCatalog)
+    expect(matchPro.matchedVia).toBe('id')
+    expect(matchPro.entry?.input).toContain('image')
+    const modelPro: any = { id: 'mimo-v2.5-pro', name: 'mimo-v2.5-pro' }
+    applyMatchToModel(modelPro, matchPro)
+    expect(modelPro.supportsImages).toBe(true)
+    expect(modelPro.input).toContain('image')
+
+    // 2. mimo-v2.5-flash：同族匹配到 mimo-v2.5 并自动勾选图片
+    const matchFlash = matchModel('mimo-v2.5-flash', 'mimo-v2.5-flash', mockCatalog)
+    expect(matchFlash.matchedVia).toBe('family')
+    const modelFlash: any = { id: 'mimo-v2.5-flash', name: 'mimo-v2.5-flash' }
+    applyMatchToModel(modelFlash, matchFlash)
+    expect(modelFlash.supportsImages).toBe(true)
+    expect(modelFlash.input).toContain('image')
+
+    // 3. mimo-v2.5-luna：通过增强的词干提取同族匹配到 mimo-v2.5 并自动勾选图片
+    const matchLuna = matchModel('mimo-v2.5-luna', 'mimo-v2.5-luna', mockCatalog)
+    expect(matchLuna.matchedVia).toBe('family')
+    const modelLuna: any = { id: 'mimo-v2.5-luna', name: 'mimo-v2.5-luna' }
+    applyMatchToModel(modelLuna, matchLuna)
+    expect(modelLuna.supportsImages).toBe(true)
+    expect(modelLuna.input).toContain('image')
+
+    // 4. mimo-v2.5-ds：通过增强的词干提取同族匹配到 mimo-v2.5 并自动勾选图片
+    const matchDs = matchModel('mimo-v2.5-ds', 'mimo-v2.5-ds', mockCatalog)
+    expect(matchDs.matchedVia).toBe('family')
+    const modelDs: any = { id: 'mimo-v2.5-ds', name: 'mimo-v2.5-ds' }
+    applyMatchToModel(modelDs, matchDs)
+    expect(modelDs.supportsImages).toBe(true)
+    expect(modelDs.input).toContain('image')
+
+    // 5. 即使 models.dev 离线或无对应条目，原生 MiMo 视觉家族也自适应保底勾选图片
+    const offlineMatch = matchModel('mimo-v2.5-custom', 'mimo-v2.5-custom', [])
+    const modelCustom: any = { id: 'mimo-v2.5-custom', name: 'mimo-v2.5-custom' }
+    applyMatchToModel(modelCustom, offlineMatch)
+    expect(modelCustom.supportsImages).toBe(true)
+    expect(modelCustom.input).toContain('image')
   })
 
   it('完全无匹配时返回 none', () => {

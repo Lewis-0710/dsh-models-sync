@@ -65,6 +65,41 @@ describe('模型真实测活引擎测试', () => {
     expect(result.message).toContain('4008')
   })
 
+  it('真实捕获 Trae solo-bridge 包装在流式正文内容中的 4008 额度错误', async () => {
+    const dummyModel: ModelInfo = {
+      id: 'claude-3-7-sonnet',
+      name: 'Claude 3.7 Sonnet',
+      supportsImages: true,
+      supportsText: true,
+      rawPath: 'trae.ai.models.0',
+      rawIndex: 0,
+      rawParentKey: 'trae.ai.models',
+    }
+
+    // 模拟 solo-bridge 将 4008 作为正文输出的真实行为
+    const mockLlmWithContentError = {
+      stream: (options: any) => {
+        return (async function* () {
+          yield { type: 'content-start', index: 0 }
+          yield {
+            type: 'delta',
+            delta: '\n\n⚠️ **[Trae 错误]**: 当前 Trae 账号可用额度已耗尽，请前往 Trae 充值或升级套餐 (错误码 4008)',
+          }
+          yield { type: 'finish', reason: { kind: 'stop' } }
+        })()
+      },
+    }
+
+    const result = await probeSingleModel(dummyModel, {
+      llm: mockLlmWithContentError,
+      providerId: 'trae-global',
+    })
+
+    expect(result.success).toBe(false)
+    expect(result.message).toContain('当前 Trae 账号可用额度已耗尽')
+    expect(result.message).toContain('4008')
+  })
+
   it('真实捕获模型正常返回 Token 并计算延迟', async () => {
     const dummyModel: ModelInfo = {
       id: 'deepseek-v4.1-flash',

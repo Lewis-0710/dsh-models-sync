@@ -77,6 +77,59 @@ export function resolveProviderId(groupKey: string, availableProviders: string[]
 }
 
 /**
+ * 从返回的文本内容中检测是否包含上游伪装成正文的错误信息
+ * （如 Trae solo-bridge 发生 4008 额度耗尽时会将错误直接包装进 content 文本）
+ */
+export function extractContentError(text: string): string | undefined {
+  if (!text) return undefined
+  const trimmed = text.trim()
+  if (!trimmed) return undefined
+
+  // 1. 特征匹配 Trae 错误封装（如 \n\n⚠️ **[Trae 错误]**: ...）
+  if (trimmed.includes('[Trae 错误]') || trimmed.includes('**[Trae 错误]**')) {
+    const clean = trimmed.replace(/^[\s\n]*⚠️\s*\*\*\[Trae 错误\]\*\*[：:]\s*/i, '[Trae 错误]: ').trim()
+    return clean
+  }
+
+  // 2. 匹配具体错误码与关键词
+  if (
+    /4008|当前\s*Trae\s*账号可用额度已耗尽|账号可用额度已耗尽/i.test(trimmed) ||
+    /4120|权限不足.*Trae\s*Pro/i.test(trimmed) ||
+    /4003|凭据已失效.*重新登录/i.test(trimmed) ||
+    /4029|请求过于频繁.*限流/i.test(trimmed)
+  ) {
+    const clean = trimmed.replace(/^[\s\n⚠️*#]+/, '').trim()
+    return clean.startsWith('[Trae 错误]') ? clean : `[Trae 错误]: ${clean}`
+  }
+
+  // 3. 通用上游错误包裹匹配（如 "[Error]: ...", "[错误]: ...", "[Failure]: ..." 等）
+  const genericMatch = trimmed.match(/^\[(Error|错误|Failure)\][：:]\s*(.+)/i)
+  if (genericMatch) {
+    return trimmed
+  }
+
+  // 4. 常见的 API 报错或 JSON 错误正文
+  if (/^({\s*"error"|"error"\s*:|{"code"\s*:)/i.test(trimmed)) {
+    try {
+      const obj = JSON.parse(trimmed)
+      const msg = obj?.error?.message || obj?.error || obj?.message
+      if (msg) return `[API 错误]: ${msg}`
+    } catch {
+      return trimmed
+    }
+  }
+
+  // 5. 常见英文额度耗尽 / 鉴权失败 / 限流提示
+  if (
+    /quota\s+exceeded|insufficient\s+(quota|balance|funds)|rate\s+limit\s+exceeded|credit\s+exhausted|token\s+expired|unauthorized\b|invalid\s+api\s*key/i.test(trimmed)
+  ) {
+    return `[上游错误]: ${trimmed.slice(0, 120)}`
+  }
+
+  return undefined
+}
+
+/**
  * 通过 DSH LLM 运行时真实发送探测请求
  */
 export async function probeSingleModelWithLlm(
@@ -108,10 +161,11 @@ export async function probeSingleModelWithLlm(
       signal: controller.signal,
     })
 
+    let accumulatedText = ''
     let finishError: string | undefined
 
     for await (const chunk of stream) {
-      // 检查失败信号（如额度耗尽、权限不足、认证失败）
+      // 检查官方 finish 错误信号（如额度耗尽、权限不足、认证失败）
       if (chunk?.type === 'finish') {
         if (chunk.reason?.kind === 'error') {
           const failure = chunk.reason.failure
@@ -120,19 +174,52 @@ export async function probeSingleModelWithLlm(
         }
       }
 
-      // 只要收到任何有效文本内容或 delta
-      const hasContent =
-        (typeof chunk?.delta === 'string' && chunk.delta.length > 0) ||
-        (typeof chunk?.text === 'string' && chunk.text.length > 0) ||
-        chunk?.type === 'delta' ||
-        chunk?.type === 'content-start'
+      // 提取累积文本
+      let deltaText = ''
+      if (typeof chunk?.delta === 'string') deltaText = chunk.delta
+      else if (typeof chunk?.text === 'string') deltaText = chunk.text
+      else if (chunk?.type === 'delta' && typeof chunk?.content === 'string') deltaText = chunk.content
 
-      if (hasContent && !firstTokenReceived) {
+      if (deltaText) {
+        accumulatedText += deltaText
+      }
+
+      // 核心：实时检测累积文本中是否包含上游伪装成正文的错误信息
+      const contentError = extractContentError(accumulatedText)
+      if (contentError) {
+        finishError = contentError
+        clearTimeout(timer)
+        try {
+          controller.abort()
+        } catch {}
+        break
+      }
+
+      // 只有当真正接收到非空实质文本内容时，才进入成功判定（严禁以 content-start 等空事件误判为成功）
+      const trimmedText = accumulatedText.trim()
+      if (trimmedText.length > 0 && !firstTokenReceived) {
+        // 如果文本开头可能属于错误警示标记（如 ⚠️、[、{、*、Error 等），需缓冲一定字符以防截断漏判
+        const isSuspiciousStart = /^([⚠️\[\{\*#]|Error|错误|Fail|400)/i.test(trimmedText)
+        if (isSuspiciousStart && trimmedText.length < 50) {
+          continue
+        }
+
+        // 再次确认不包含错误
+        const recheckError = extractContentError(accumulatedText)
+        if (recheckError) {
+          finishError = recheckError
+          clearTimeout(timer)
+          try {
+            controller.abort()
+          } catch {}
+          break
+        }
+
         firstTokenReceived = true
         latencyMs = Date.now() - startTime
         clearTimeout(timer)
         try {
-          // 收到首个 Token 即代表连通且正常，立即中断流以避免继续计费和消耗额度
+          // 收到首个正常 Token 即代表连通且正常，立即中断流以避免继续计费和消耗额度
           controller.abort()
         } catch {}
         break
@@ -140,6 +227,12 @@ export async function probeSingleModelWithLlm(
     }
 
     clearTimeout(timer)
+
+    // 若流正常结束但累积内容最终判定为错误提示
+    if (!finishError && accumulatedText) {
+      const lateError = extractContentError(accumulatedText)
+      if (lateError) finishError = lateError
+    }
 
     if (finishError) {
       return {
