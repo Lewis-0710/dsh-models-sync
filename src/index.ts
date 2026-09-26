@@ -8,7 +8,34 @@ import { probeModels, resolveProviderId } from './probe.ts'
 import type { ProviderGroupInfo } from './types.ts'
 
 export const name = 'dsh-models-sync'
-export const inject: string[] = []
+export const inject = ['webServer', 'llm']
+
+/**
+ * 安全解析运行时 LLM 核心服务，严格防止未声明 inject 时 Cordis 抛出拦截异常
+ */
+function resolveLlm(context: any): any {
+  if (!context) return undefined
+
+  // 1. 优先通过 Cordis 官方 reflect.get 读取，无需 inject 权限要求
+  try {
+    const fromReflect = context.reflect?.get?.('llm', false)
+    if (fromReflect) return fromReflect
+  } catch {}
+
+  // 2. 尝试从当前 context 安全读取
+  try {
+    if (context.llm) return context.llm
+  } catch {}
+
+  // 3. 尝试从祖先/根 context 安全读取
+  try {
+    const parent = context.root || context.fiber?.parent?.ctx
+    const fromParent = parent?.reflect?.get?.('llm', false) || parent?.llm
+    if (fromParent) return fromParent
+  } catch {}
+
+  return undefined
+}
 
 function sendJson(res: ServerResponse, status: number, body: unknown): void {
   const payload = JSON.stringify(body)
@@ -166,8 +193,8 @@ export function apply(ctx: Context): void {
             cachedGroups = await loadProvidersFromSettings()
           }
 
-          // 动态获取运行时 llm 核心服务
-          const llm = (webCtx as any).llm || (ctx as any).llm || webCtx.get?.('llm') || ctx.get?.('llm')
+          // 动态安全获取运行时 llm 核心服务，杜绝触发 Cordis inject 检查异常
+          const llm = resolveLlm(webCtx) || resolveLlm(ctx)
           const availableProviders: string[] = typeof llm?.listProviders === 'function'
             ? llm.listProviders().map((p: any) => p.id)
             : []
