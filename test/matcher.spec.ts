@@ -207,9 +207,9 @@ describe('4级优先级模型匹配逻辑测试', () => {
     expect(modelDs.supportsImages).toBe(true)
     expect(modelDs.input).toContain('image')
 
-    // 5. 即使 models.dev 离线或无对应条目，原生 MiMo 视觉家族也自适应保底勾选图片
-    const offlineMatch = matchModel('mimo-v2.5-custom', 'mimo-v2.5-custom', [])
-    const modelCustom: any = { id: 'mimo-v2.5-custom', name: 'mimo-v2.5-custom' }
+    // 5. 即使 models.dev 离线或无对应条目，带有工业界通用多模态视觉标识（如 -vl, -vision, -omni 等）的模型也自适应保底勾选图片
+    const offlineMatch = matchModel('custom-model-vl', 'Custom Model VL', [])
+    const modelCustom: any = { id: 'custom-model-vl', name: 'Custom Model VL' }
     applyMatchToModel(modelCustom, offlineMatch)
     expect(modelCustom.supportsImages).toBe(true)
     expect(modelCustom.input).toContain('image')

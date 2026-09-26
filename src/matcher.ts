@@ -106,39 +106,13 @@ export function getFamilyStem(id: string): string {
 }
 
 /**
- * 动态判断模型是否原生具备图片/视觉等多模态输入能力
- * 基于架构族特征与命名规范通用推导，零硬编码单个孤立模型
+ * 动态判断模型命名是否包含业界通用的视觉/多模态特征标识
+ * （如 vl, vision, omni, multimodal, 4v, 4o, visual 等工业界通用词根）
+ * 100% 通用，零品牌/零特定模型名硬编码
  */
-export function isNativeVisionModel(modelId: string, modelName = ''): boolean {
+export function hasVisionFeatureFlag(modelId: string, modelName = ''): boolean {
   const text = `${modelId} ${modelName}`.toLowerCase()
-
-  // 1. 显式带有多模态视觉特征标记：vl, vision, omni, multimodal, 4v, 4o, visual
-  if (/(^|[-_.\s])(vl|vision|omni|multimodal|visual|4v|4o)([-_.\s]|$)/i.test(text)) {
-    return true
-  }
-
-  // 2. 原生全系视觉的模型家族：
-  // - 小米 MiMo-2.5 / MiMo-2.6 及以上全系列架构均为原生多模态视觉基座
-  if (/mimo[-_.](v?2\.[5-9]|v?[3-9])/i.test(text)) {
-    return true
-  }
-
-  // - Google Gemini 1.5 / 2.0 / 2.5 全系多模态视觉
-  if (/gemini[-_.](1\.5|2\.[0-9]|2\.5|[3-9])/i.test(text)) {
-    return true
-  }
-
-  // - Anthropic Claude 3 / 3.5 / 3.7 全系多模态视觉
-  if (/claude[-_.](3|3\.5|3\.7|[4-9])/i.test(text)) {
-    return true
-  }
-
-  // - OpenAI GPT-4o / GPT-4.5 / GPT-5 全系多模态视觉
-  if (/gpt[-_.]?(4o|4\.5|5)/i.test(text)) {
-    return true
-  }
-
-  return false
+  return /(^|[-_.\s])(vl|vision|omni|multimodal|visual|4v|4o)([-_.\s]|$)/i.test(text)
 }
 
 /**
@@ -156,9 +130,9 @@ export function pickBestEntry(entries: ModelsDevEntry[]): ModelsDevEntry | undef
     if (a.input && a.input.includes('image')) scoreA += 25
     if (b.input && b.input.includes('image')) scoreB += 25
 
-    // 2. 原厂/官方 Provider 优先（如 xiaomi, openai, anthropic, google, zhipu 等）
-    const isOfficialA = a.provider && ['xiaomi', 'openai', 'anthropic', 'google', 'zhipu', 'meta', 'deepseek', 'mistral', 'qwen', 'aliyun'].includes(a.provider.toLowerCase())
-    const isOfficialB = b.provider && ['xiaomi', 'openai', 'anthropic', 'google', 'zhipu', 'meta', 'deepseek', 'mistral', 'qwen', 'aliyun'].includes(b.provider.toLowerCase())
+    // 2. 原厂/官方 Provider 优先（判断 provider 名称是否与模型命名空间前缀一致，如 org/model-id）
+    const isOfficialA = !!(a.provider && a.id.toLowerCase().startsWith(`${a.provider.toLowerCase()}/`))
+    const isOfficialB = !!(b.provider && b.id.toLowerCase().startsWith(`${b.provider.toLowerCase()}/`))
     if (isOfficialA) scoreA += 15
     if (isOfficialB) scoreB += 15
 
@@ -209,6 +183,26 @@ export function matchModel(
   const rawIdClean = cleanId(effectiveId)
   const rawNameClean = cleanId(effectiveName)
 
+  // 核心辅助：同族基座多模态动态继承（Family Modality Inheritance）
+  // 零模型名硬编码：动态查询 catalog 中同族基座是否具备 image 等模态，自动补全变体第三方脏数据
+  function enrichWithFamilyModality(matchedEntry: ModelsDevEntry): ModelsDevEntry {
+    if (matchedEntry.input && matchedEntry.input.includes('image')) {
+      return matchedEntry
+    }
+    const stem = getFamilyStem(matchedEntry.id)
+    if (stem && stem !== cleanId(matchedEntry.id)) {
+      const familyCandidates = catalog.filter(m => cleanId(m.id) === stem || getFamilyStem(m.id) === stem)
+      const bestFamily = pickBestEntry(familyCandidates)
+      if (bestFamily && bestFamily.input && bestFamily.input.includes('image')) {
+        return {
+          ...matchedEntry,
+          input: Array.from(new Set([...(matchedEntry.input || ['text']), ...bestFamily.input])),
+        }
+      }
+    }
+    return matchedEntry
+  }
+
   // ==========================================
   // 优先级 1：先使用模型 ID（已去除 free）和 models.dev 匹配
   // ==========================================
@@ -223,6 +217,7 @@ export function matchModel(
   }
 
   if (hit) {
+    hit = enrichWithFamilyModality(hit)
     return {
       entry: hit,
       matchedVia: 'id',
@@ -244,6 +239,7 @@ export function matchModel(
     }
 
     if (hit) {
+      hit = enrichWithFamilyModality(hit)
       return {
         entry: hit,
         matchedVia: 'alias',
@@ -278,7 +274,7 @@ export function matchModel(
         const best = candidates[0]
         if (best) {
           return {
-            entry: best,
+            entry: enrichWithFamilyModality(best),
             matchedVia: 'latest',
             matchedId: best.id,
           }
@@ -292,7 +288,7 @@ export function matchModel(
   // ==========================================
   const familyStem = getFamilyStem(rawIdClean)
   if (familyStem && familyStem !== rawIdClean) {
-    // 寻找同族模型（如 mimo-v2.5-luna / mimo-2.7-flash 寻找同族模型）
+    // 寻找同族模型（如 xxx-luna / xxx-flash 寻找同族模型）
     const familyCandidates = catalog.filter(m => {
       const mClean = cleanId(m.id)
       return mClean === familyStem || getFamilyStem(mClean) === familyStem
@@ -300,6 +296,7 @@ export function matchModel(
     hit = pickBestEntry(familyCandidates)
 
     if (hit) {
+      hit = enrichWithFamilyModality(hit)
       return {
         entry: hit,
         matchedVia: 'family',
@@ -321,6 +318,7 @@ export function matchModel(
       hit = pickBestEntry(nameFamilyCandidates)
 
       if (hit) {
+        hit = enrichWithFamilyModality(hit)
         return {
           entry: hit,
           matchedVia: 'family',
@@ -342,8 +340,8 @@ export function matchModel(
 export function applyMatchToModel(model: ModelInfo, match: MatchResult): boolean {
   if (!match.entry) {
     model.matchedVia = 'none'
-    // 即使未匹配到 models.dev，根据原生模型家族通用特征自适应推导多模态能力
-    if (isNativeVisionModel(model.id, model.name)) {
+    // 即使未匹配到 models.dev，根据业界通用的视觉/多模态特征标识（如 vl, vision, omni 等）自适应推导
+    if (hasVisionFeatureFlag(model.id, model.name)) {
       model.supportsImages = true
       const curInputs = Array.isArray(model.input) ? [...model.input] : ['text']
       if (!curInputs.includes('image')) curInputs.push('image')
@@ -364,9 +362,9 @@ export function applyMatchToModel(model: ModelInfo, match: MatchResult): boolean
     model.maxOutput = entry.maxOutput
   }
 
-  // 多模态图片支持判断：优先采纳 entry 声明，结合原生多模态视觉家族自适应兜底
+  // 多模态图片支持判断：优先采纳 entry 声明，结合通用视觉特征标记（如 *-vl, *-vision 等）
   let supportsImages = entry.input.includes('image')
-  if (!supportsImages && isNativeVisionModel(model.id, model.name || entry.name)) {
+  if (!supportsImages && hasVisionFeatureFlag(model.id, model.name || entry.name)) {
     supportsImages = true
   }
 
