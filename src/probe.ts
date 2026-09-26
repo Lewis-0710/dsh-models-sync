@@ -91,39 +91,43 @@ export function extractContentError(text: string): string | undefined {
     return clean
   }
 
-  // 2. 匹配具体错误码与关键词
+  // 2. 匹配具体错误码与中文关键词
   if (
-    /4008|当前\s*Trae\s*账号可用额度已耗尽|账号可用额度已耗尽/i.test(trimmed) ||
-    /4120|权限不足.*Trae\s*Pro/i.test(trimmed) ||
-    /4003|凭据已失效.*重新登录/i.test(trimmed) ||
-    /4029|请求过于频繁.*限流/i.test(trimmed)
+    /4008|当前\s*Trae\s*账号可用额度已耗尽|账号可用额度已耗尽|可用额度已耗尽|额度已耗尽|额度超限|账户额度不足|可用额度不足|积分不足|余额已耗尽/i.test(trimmed) ||
+    /4120|权限不足.*Trae\s*Pro|需订阅\s*Pro|需升级套餐/i.test(trimmed) ||
+    /4003|凭据已失效.*重新登录|登录凭据已失效/i.test(trimmed) ||
+    /4029|请求过于频繁.*限流|触发\s*Trae\s*限流/i.test(trimmed)
   ) {
     const clean = trimmed.replace(/^[\s\n⚠️*#]+/, '').trim()
     return clean.startsWith('[Trae 错误]') ? clean : `[Trae 错误]: ${clean}`
   }
 
-  // 3. 通用上游错误包裹匹配（如 "[Error]: ...", "[错误]: ...", "[Failure]: ..." 等）
+  // 3. 匹配常见英文额度耗尽 / 鉴权失败 / 限流提示（包括 Trae 官方英文原生返回）
+  if (
+    /exceeded\s+the\s+quota|quota\s+exceeded|requests\s+have\s+exceeded|insufficient\s+(quota|balance|funds|credit)|rate\s+limit\s+exceeded|credit\s+exhausted|token\s+expired|unauthorized\b|invalid\s+api\s*key|quota\s+reached|billing\s+limit/i.test(trimmed)
+  ) {
+    return `[Trae 错误]: 当前 Trae 账号可用额度已耗尽 (错误码 4008)`
+  }
+
+  // 4. 通用上游错误包裹匹配（如 "[Error]: ...", "[错误]: ...", "[Failure]: ..." 等）
   const genericMatch = trimmed.match(/^\[(Error|错误|Failure)\][：:]\s*(.+)/i)
   if (genericMatch) {
     return trimmed
   }
 
-  // 4. 常见的 API 报错或 JSON 错误正文
+  // 5. 常见的 API 报错或 JSON 错误正文
   if (/^({\s*"error"|"error"\s*:|{"code"\s*:)/i.test(trimmed)) {
     try {
       const obj = JSON.parse(trimmed)
       const msg = obj?.error?.message || obj?.error || obj?.message
+      const code = obj?.code || obj?.error?.code
+      if (code === 4008 || /quota/i.test(msg || '')) {
+        return `[Trae 错误]: 当前 Trae 账号可用额度已耗尽 (错误码 4008)`
+      }
       if (msg) return `[API 错误]: ${msg}`
     } catch {
       return trimmed
     }
-  }
-
-  // 5. 常见英文额度耗尽 / 鉴权失败 / 限流提示
-  if (
-    /quota\s+exceeded|insufficient\s+(quota|balance|funds)|rate\s+limit\s+exceeded|credit\s+exhausted|token\s+expired|unauthorized\b|invalid\s+api\s*key/i.test(trimmed)
-  ) {
-    return `[上游错误]: ${trimmed.slice(0, 120)}`
   }
 
   return undefined
@@ -139,14 +143,12 @@ export async function probeSingleModelWithLlm(
   timeoutMs = 12000
 ): Promise<ProbeResult> {
   const startTime = Date.now()
-  let firstTokenReceived = false
-  let latencyMs = 0
 
   try {
     const controller = new AbortController()
     const timer = setTimeout(() => controller.abort(), timeoutMs)
 
-    // 发起最小真实请求进行测活
+    // 发起极简真实请求进行测活（maxTokens=5，保证耗费极低）
     const stream = llm.stream({
       provider: providerId,
       model: model.id,
@@ -165,75 +167,51 @@ export async function probeSingleModelWithLlm(
     let finishError: string | undefined
 
     for await (const chunk of stream) {
-      // 检查官方 finish 错误信号（如额度耗尽、权限不足、认证失败）
+      // 1. 检查直接的 error chunk 事件
+      if (chunk?.type === 'error' || chunk?.error) {
+        finishError = chunk.error?.message || chunk.message || '模型调用发生异常'
+        break
+      }
+
+      // 2. 检查 finish 事件中的官方错误信号
       if (chunk?.type === 'finish') {
-        if (chunk.reason?.kind === 'error') {
+        if (chunk.reason?.kind === 'error' || chunk.reason?.failure) {
           const failure = chunk.reason.failure
           finishError = failure?.message || '模型调用失败'
           break
         }
       }
 
-      // 提取累积文本
+      // 3. 提取累积文本（涵盖 text, delta, content, reasoning 等所有流式字段）
       let deltaText = ''
-      if (typeof chunk?.delta === 'string') deltaText = chunk.delta
-      else if (typeof chunk?.text === 'string') deltaText = chunk.text
+      if (typeof chunk?.text === 'string') deltaText = chunk.text
+      else if (typeof chunk?.delta === 'string') deltaText = chunk.delta
       else if (chunk?.type === 'delta' && typeof chunk?.content === 'string') deltaText = chunk.content
+      else if (typeof chunk?.reasoning === 'string') deltaText = chunk.reasoning
 
       if (deltaText) {
         accumulatedText += deltaText
       }
 
-      // 核心：实时检测累积文本中是否包含上游伪装成正文的错误信息
+      // 4. 实时检测累积正文中是否伪装包含额度耗尽等上游错误信息
       const contentError = extractContentError(accumulatedText)
       if (contentError) {
         finishError = contentError
         clearTimeout(timer)
-        try {
-          controller.abort()
-        } catch {}
-        break
-      }
-
-      // 只有当真正接收到非空实质文本内容时，才进入成功判定（严禁以 content-start 等空事件误判为成功）
-      const trimmedText = accumulatedText.trim()
-      if (trimmedText.length > 0 && !firstTokenReceived) {
-        // 如果文本开头可能属于错误警示标记（如 ⚠️、[、{、*、Error 等），需缓冲一定字符以防截断漏判
-        const isSuspiciousStart = /^([⚠️\[\{\*#]|Error|错误|Fail|400)/i.test(trimmedText)
-        if (isSuspiciousStart && trimmedText.length < 50) {
-          continue
-        }
-
-        // 再次确认不包含错误
-        const recheckError = extractContentError(accumulatedText)
-        if (recheckError) {
-          finishError = recheckError
-          clearTimeout(timer)
-          try {
-            controller.abort()
-          } catch {}
-          break
-        }
-
-        firstTokenReceived = true
-        latencyMs = Date.now() - startTime
-        clearTimeout(timer)
-        try {
-          // 收到首个正常 Token 即代表连通且正常，立即中断流以避免继续计费和消耗额度
-          controller.abort()
-        } catch {}
+        try { controller.abort() } catch {}
         break
       }
     }
 
     clearTimeout(timer)
 
-    // 若流正常结束但累积内容最终判定为错误提示
+    // 5. 流结束后做最后的终检验查
     if (!finishError && accumulatedText) {
       const lateError = extractContentError(accumulatedText)
       if (lateError) finishError = lateError
     }
 
+    // 若捕获到任何错误，立即明确判定为异常
     if (finishError) {
       return {
         modelId: model.id,
@@ -244,7 +222,10 @@ export async function probeSingleModelWithLlm(
       }
     }
 
-    if (firstTokenReceived) {
+    // 只有当真正接收到非空实质回复文本时，才进入成功判定
+    const trimmed = accumulatedText.trim()
+    if (trimmed.length > 0) {
+      const latencyMs = Date.now() - startTime
       return {
         modelId: model.id,
         providerId,
@@ -262,16 +243,18 @@ export async function probeSingleModelWithLlm(
       message: '未收到模型响应数据',
     }
   } catch (error: any) {
-    if (firstTokenReceived) {
+    const msg = error?.message || String(error)
+    // 检查异常消息本身是否包含 4008 额度耗尽信息
+    const errContentError = extractContentError(msg)
+    if (errContentError) {
       return {
         modelId: model.id,
         providerId,
-        success: true,
-        latencyMs: latencyMs || (Date.now() - startTime),
-        message: `${latencyMs || (Date.now() - startTime)}ms`,
+        success: false,
+        latencyMs: Date.now() - startTime,
+        message: errContentError,
       }
     }
-    const msg = error?.message || String(error)
     return {
       modelId: model.id,
       providerId,

@@ -100,6 +100,38 @@ describe('模型真实测活引擎测试', () => {
     expect(result.message).toContain('4008')
   })
 
+  it('真实捕获 Trae 原生英文额度超限返回 (Your requests have exceeded the quota)', async () => {
+    const dummyModel: ModelInfo = {
+      id: 'gpt-5.4',
+      name: 'GPT-5.4',
+      supportsImages: true,
+      supportsText: true,
+      rawPath: 'trae.ai.models.0',
+      rawIndex: 0,
+      rawParentKey: 'trae.ai.models',
+    }
+
+    // 模拟 Trae 国际版真实返回的分片英文额度耗尽正文
+    const mockLlmQuota = {
+      stream: (options: any) => {
+        return (async function* () {
+          yield { type: 'text-delta', text: 'Your requests ' }
+          yield { type: 'text-delta', text: 'have exceeded the quota.' }
+          yield { type: 'finish', reason: { kind: 'stop' } }
+        })()
+      },
+    }
+
+    const result = await probeSingleModel(dummyModel, {
+      llm: mockLlmQuota,
+      providerId: 'trae-global',
+    })
+
+    expect(result.success).toBe(false)
+    expect(result.message).toContain('当前 Trae 账号可用额度已耗尽')
+    expect(result.message).toContain('4008')
+  })
+
   it('真实捕获模型正常返回 Token 并计算延迟', async () => {
     const dummyModel: ModelInfo = {
       id: 'deepseek-v4.1-flash',
@@ -151,3 +183,4 @@ describe('模型真实测活引擎测试', () => {
     expect(result.message).toContain('未检测到可用的 LLM 运行时')
   })
 })
+

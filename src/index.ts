@@ -11,6 +11,37 @@ export const name = 'dsh-models-sync'
 export const inject = ['webServer', 'llm']
 
 /**
+ * 等级英文首字母大写格式化
+ */
+function formatEffortName(id: string): string {
+  if (!id) return id
+  return id.charAt(0).toUpperCase() + id.slice(1)
+}
+
+/**
+ * 动态根据配置为 Model 组装符合 DSH Desktop 规范的 reasoning 对象
+ */
+export function buildDshReasoning(
+  availableLevels: string[] = [],
+  defaultLevel = 'medium'
+): { efforts: Array<{ id: string; name: string }>; defaultEffort: string } | undefined {
+  const filtered = availableLevels.filter(lvl => !['off', 'false', 'none', 'null'].includes(lvl.toLowerCase()))
+  if (filtered.length === 0) return undefined
+
+  const efforts = filtered.map(lvl => ({
+    id: lvl,
+    name: formatEffortName(lvl),
+  }))
+
+  const safeDefault = efforts.some(e => e.id === defaultLevel) ? defaultLevel : efforts[0]?.id || 'medium'
+
+  return {
+    efforts,
+    defaultEffort: safeDefault,
+  }
+}
+
+/**
  * 安全解析运行时 LLM 核心服务，严格防止未声明 inject 时 Cordis 抛出拦截异常
  */
 function resolveLlm(context: any): any {
@@ -58,6 +89,124 @@ export function apply(ctx: Context): void {
   ctx.logger.info('[dsh-models-sync] plugin activating...')
 
   let cachedGroups: ProviderGroupInfo[] = []
+
+  // 辅助：从缓存或 settings 中按 provider 与 modelId 查找已配置的思考等级
+  function findModelReasoningConfig(providerId: string, modelId: string) {
+    const cleanProvider = (providerId || '').toLowerCase()
+    const cleanModel = (modelId || '').toLowerCase()
+
+    for (const group of cachedGroups) {
+      const gKey = group.key.toLowerCase()
+      const matchProvider =
+        gKey === cleanProvider ||
+        gKey.includes(cleanProvider) ||
+        cleanProvider.includes(gKey) ||
+        (cleanProvider.includes('trae') && gKey.includes('trae')) ||
+        (cleanProvider.includes('workbuddy') && gKey.includes('workbuddy')) ||
+        (cleanProvider.includes('qoder') && gKey.includes('qoder'))
+
+      if (!matchProvider) continue
+
+      const model = group.models.find(m => m.id.toLowerCase() === cleanModel || m.name.toLowerCase() === cleanModel)
+      if (model && (model.availableReasoningLevels?.length || model.reasoningLevel !== 'off')) {
+        return {
+          availableLevels: model.availableReasoningLevels || ['low', 'medium', 'high'],
+          defaultLevel: model.reasoningLevel || 'medium',
+        }
+      }
+    }
+    return undefined
+  }
+
+  // 注入拦截：向 LLM 运行时挂载 ModelInfo 修饰器，彻底打破上游覆盖导致思考等级丢失的死穴
+  function installLlmReasoningHooks(llm: any) {
+    if (!llm || llm._dshModelsSyncReasoningHookInstalled) return
+    llm._dshModelsSyncReasoningHookInstalled = true
+
+    // 1. Hook: resolveModelInfo(provider, model, signal)
+    if (typeof llm.resolveModelInfo === 'function') {
+      const origResolve = llm.resolveModelInfo.bind(llm)
+      llm.resolveModelInfo = async function (provider: string, model: string, signal?: AbortSignal) {
+        const info = await origResolve(provider, model, signal)
+        if (!info) return info
+
+        const config = findModelReasoningConfig(provider, model)
+        if (config && config.availableLevels.length > 0) {
+          const reasoning = buildDshReasoning(config.availableLevels, config.defaultLevel)
+          if (reasoning) {
+            if (!info.reasoning || !Array.isArray(info.reasoning.efforts) || info.reasoning.efforts.length === 0) {
+              info.reasoning = reasoning
+            } else {
+              const existingIds = new Set(info.reasoning.efforts.map((e: any) => e.id))
+              for (const effort of reasoning.efforts) {
+                if (!existingIds.has(effort.id)) {
+                  info.reasoning.efforts.push(effort)
+                  existingIds.add(effort.id)
+                }
+              }
+              if (config.defaultLevel && existingIds.has(config.defaultLevel)) {
+                info.reasoning.defaultEffort = config.defaultLevel
+              }
+            }
+          }
+        }
+        return info
+      }
+    }
+
+    // 2. Hook: resolveModelInfoFor(registration, model, signal)
+    if (typeof llm.resolveModelInfoFor === 'function') {
+      const origResolveFor = llm.resolveModelInfoFor.bind(llm)
+      llm.resolveModelInfoFor = async function (registration: any, model: string, signal?: AbortSignal) {
+        const info = await origResolveFor(registration, model, signal)
+        if (!info) return info
+
+        const provider = registration?.provider?.id
+        const config = findModelReasoningConfig(provider, model)
+        if (config && config.availableLevels.length > 0) {
+          const reasoning = buildDshReasoning(config.availableLevels, config.defaultLevel)
+          if (reasoning) {
+            if (!info.reasoning || !Array.isArray(info.reasoning.efforts) || info.reasoning.efforts.length === 0) {
+              info.reasoning = reasoning
+            } else {
+              const existingIds = new Set(info.reasoning.efforts.map((e: any) => e.id))
+              for (const effort of reasoning.efforts) {
+                if (!existingIds.has(effort.id)) {
+                  info.reasoning.efforts.push(effort)
+                  existingIds.add(effort.id)
+                }
+              }
+              if (config.defaultLevel && existingIds.has(config.defaultLevel)) {
+                info.reasoning.defaultEffort = config.defaultLevel
+              }
+            }
+          }
+        }
+        return info
+      }
+    }
+  }
+
+  // 初始尝试挂载
+  const initialLlm = resolveLlm(ctx)
+  if (initialLlm) {
+    installLlmReasoningHooks(initialLlm)
+  }
+
+  // 监听 llm 服务就绪并绑定
+  ctx.inject(['llm'], (llmCtx: any) => {
+    const llm = llmCtx?.llm || resolveLlm(llmCtx) || resolveLlm(ctx)
+    if (llm) {
+      installLlmReasoningHooks(llm)
+    }
+  })
+
+  // 初始加载一次已有配置
+  loadProvidersFromSettings().then(g => {
+    if (g && g.length > 0 && cachedGroups.length === 0) {
+      cachedGroups = g
+    }
+  }).catch(() => {})
 
   // 惰性挂载到 webServer（宿主按需提供）
   ctx.inject(['webServer'], (webCtx: any) => {
