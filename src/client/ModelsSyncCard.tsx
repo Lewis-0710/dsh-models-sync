@@ -451,10 +451,10 @@ export const ModelsSyncCard: React.FC<ModelsSyncCardProps> = ({ as = 'div', ctx 
                             <span style={styles.modelNameText}>{displayName}</span>
                             {/* 测活状态 Badge */}
                             {model.testStatus === 'success' && (
-                              <span style={styles.badgeSuccess}>🟢 正常 {model.testMessage}</span>
+                              <span style={styles.badgeSuccess} title={model.testMessage}>🟢 正常 {model.testMessage}</span>
                             )}
                             {model.testStatus === 'failed' && (
-                              <span style={styles.badgeFailed}>🔴 异常 {model.testMessage}</span>
+                              <span style={styles.badgeFailed} title={model.testMessage}>🔴 异常 {model.testMessage}</span>
                             )}
                             {model.testStatus === 'testing' && (
                               <span style={styles.badgeTesting}>🟡 检测中...</span>
@@ -827,6 +827,12 @@ const styles: Record<string, React.CSSProperties> = {
     border: '0.5px solid rgba(239, 68, 68, 0.3)',
     borderRadius: '4px',
     padding: '1px 6px',
+    maxWidth: '450px',
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    whiteSpace: 'nowrap',
+    display: 'inline-block',
+    verticalAlign: 'middle',
   },
   badgeTesting: {
     fontSize: '11px',

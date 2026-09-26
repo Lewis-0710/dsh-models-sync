@@ -4,7 +4,7 @@ import type {} from '@deepseek-ai/dsh-host-webserver'
 import { loadProvidersFromSettings, saveModelsToSettings } from './settings-manager.ts'
 import { loadModelsDev } from './catalog.ts'
 import { matchModel, applyMatchToModel } from './matcher.ts'
-import { probeModels } from './probe.ts'
+import { probeModels, resolveProviderId } from './probe.ts'
 import type { ProviderGroupInfo } from './types.ts'
 
 export const name = 'dsh-models-sync'
@@ -166,12 +166,23 @@ export function apply(ctx: Context): void {
             cachedGroups = await loadProvidersFromSettings()
           }
 
-          const modelsToTest = cachedGroups
-            .filter(g => !targetProviderKey || g.key === targetProviderKey)
-            .flatMap(g => g.models)
+          // 动态获取运行时 llm 核心服务
+          const llm = (webCtx as any).llm || (ctx as any).llm || webCtx.get?.('llm') || ctx.get?.('llm')
+          const availableProviders: string[] = typeof llm?.listProviders === 'function'
+            ? llm.listProviders().map((p: any) => p.id)
+            : []
 
-          // 执行测活
-          const testResults = await probeModels(modelsToTest)
+          const itemsToTest: { model: ModelInfo; providerId: string }[] = []
+          for (const group of cachedGroups) {
+            if (targetProviderKey && group.key !== targetProviderKey) continue
+            const providerId = resolveProviderId(group.key, availableProviders)
+            for (const model of group.models) {
+              itemsToTest.push({ model, providerId })
+            }
+          }
+
+          // 执行真实测活
+          const testResults = await probeModels(itemsToTest, llm)
           const resultMap = new Map(testResults.map(r => [r.modelId, r]))
 
           for (const group of cachedGroups) {
