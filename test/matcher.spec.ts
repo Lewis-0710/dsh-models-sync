@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { matchModel, applyMatchToModel } from '../src/matcher.ts'
+import { matchModel, applyMatchToModel, stripRateSuffix } from '../src/matcher.ts'
 import type { ModelsDevEntry } from '../src/types.ts'
 
 const mockCatalog: ModelsDevEntry[] = [
@@ -213,6 +213,25 @@ describe('4级优先级模型匹配逻辑测试', () => {
     applyMatchToModel(modelCustom, offlineMatch)
     expect(modelCustom.supportsImages).toBe(true)
     expect(modelCustom.input).toContain('image')
+  })
+
+  it('去除模型名称中的平台倍率后缀与价格标签 (stripRateSuffix)', () => {
+    expect(stripRateSuffix('Qwen3.8-Max · x0.2')).toBe('Qwen3.8-Max')
+    expect(stripRateSuffix('Sonus · x8')).toBe('Sonus')
+    expect(stripRateSuffix('Auto · x0.5')).toBe('Auto')
+    expect(stripRateSuffix('DeepSeek-V4-Pro [x0.5]')).toBe('DeepSeek-V4-Pro')
+    expect(stripRateSuffix('Kimi-K3 (x1.4)')).toBe('Kimi-K3')
+    expect(stripRateSuffix('Custom Model · 价格暂不可用')).toBe('Custom Model')
+  })
+
+  it('携带倍率后缀的 Qoder 国际版模型能通过别名与字母数字归一化精确匹配元数据', () => {
+    // Qoder 国际版中的 qmodel_38max (名称: Qwen3.8-Max · x0.2)
+    const match = matchModel('qmodel_38max', 'Qwen3.8-Max · x0.2', mockCatalog)
+    expect(match.matchedVia).toBe('alias')
+    expect(match.entry?.id).toBe('qwen/qwen3.8-max')
+    expect(match.entry?.contextWindow).toBe(1000000)
+    expect(match.entry?.maxOutput).toBe(131072)
+    expect(match.entry?.input).toContain('image')
   })
 
   it('完全无匹配时返回 none', () => {

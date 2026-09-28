@@ -4,8 +4,10 @@ import { join } from 'node:path'
 import { homedir } from 'node:os'
 import type { ModelsDevEntry } from './types.ts'
 
+import { writeFile } from 'node:fs/promises'
+
 const MODELS_DEV_URL = 'https://models.dev/api.json'
-const TIMEOUT_MS = 10000
+const TIMEOUT_MS = 5000
 
 let memoryEntries: ModelsDevEntry[] = []
 
@@ -63,10 +65,10 @@ function parseRawApi(data: Record<string, any>): ModelsDevEntry[] {
 /**
  * 加载 models.dev 数据
  * 优先级：
- * 1. 内存缓存
- * 2. ~/.dsh/models-dev.json
- * 3. 在线 API 拉取 https://models.dev/api.json
- * 4. 内置基础 fallback
+ * 1. 内存缓存（非强制刷新时）
+ * 2. 在线 API 拉取 https://models.dev/api.json
+ * 3. 本地已缓存 ~/.dsh/models-dev.json
+ * 4. 内置快照 ~/.dsh/models-dev-snapshot.json
  */
 export async function loadModelsDev(forceOnline = false): Promise<ModelsDevEntry[]> {
   if (memoryEntries.length > 0 && !forceOnline) {
@@ -76,6 +78,7 @@ export async function loadModelsDev(forceOnline = false): Promise<ModelsDevEntry
   const localPath = join(homedir(), '.dsh', 'models-dev.json')
   const localSnapshot = join(homedir(), '.dsh', 'models-dev-snapshot.json')
 
+  // 若不强制在线，优先读取本地文件缓存
   if (!forceOnline && existsSync(localPath)) {
     try {
       const content = await readFile(localPath, 'utf8')
@@ -97,7 +100,7 @@ export async function loadModelsDev(forceOnline = false): Promise<ModelsDevEntry
     }
   }
 
-  // 尝试在线拉取
+  // 尝试在线拉取（带超时保护）
   try {
     const res = await fetch(MODELS_DEV_URL, {
       signal: AbortSignal.timeout(TIMEOUT_MS),
@@ -108,14 +111,28 @@ export async function loadModelsDev(forceOnline = false): Promise<ModelsDevEntry
       const parsed = parseRawApi(rawJson)
       if (parsed.length > 0) {
         memoryEntries = parsed
+        // 异步写入本地持久缓存，下次可秒级读取
+        writeFile(localPath, JSON.stringify({ models: parsed }, null, 2), 'utf8').catch(() => {})
         return memoryEntries
       }
     }
   } catch {
-    // 网络失败回退
+    // 在线网络失败或超时，自动回退
   }
 
-  // 尝试 snapshot
+  // 在线拉取失败时，立即尝试从本地已有缓存加载
+  if (existsSync(localPath)) {
+    try {
+      const content = await readFile(localPath, 'utf8')
+      const json = JSON.parse(content)
+      if (Array.isArray(json.models) && json.models.length > 0) {
+        memoryEntries = json.models
+        return memoryEntries
+      }
+    } catch {}
+  }
+
+  // 尝试快照降级
   if (existsSync(localSnapshot)) {
     try {
       const content = await readFile(localSnapshot, 'utf8')
@@ -124,9 +141,7 @@ export async function loadModelsDev(forceOnline = false): Promise<ModelsDevEntry
         memoryEntries = json.models
         return memoryEntries
       }
-    } catch {
-      // 忽略
-    }
+    } catch {}
   }
 
   return memoryEntries

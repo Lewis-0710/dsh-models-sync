@@ -31,11 +31,23 @@ export function stripFree(str: string): string {
 }
 
 /**
+ * 去除模型名称或别名中的计费倍率、价格标注（如 · x0.2, · x8, · x0.5, (x2), · 价格暂不可用 等）
+ */
+export function stripRateSuffix(str: string): string {
+  if (!str) return ''
+  return str
+    .replace(/[\s\t]*[·•-][\s\t]*(x\s*\d+(\.\d+)?|\d+(\.\d+)?\s*x|价格暂不可用)[\s\t]*$/i, '')
+    .replace(/\s*[\(\[\{（【]\s*(x\s*\d+(\.\d+)?|\d+(\.\d+)?\s*x|价格暂不可用)\s*[\)\]\}）】]/i, '')
+    .trim()
+}
+
+/**
  * 提取去前缀去噪音的纯模型标识
  */
 export function cleanId(raw: string): string {
   if (!raw) return ''
-  const trimmed = raw.trim().toLowerCase()
+  const withoutRate = stripRateSuffix(raw.trim())
+  const trimmed = withoutRate.toLowerCase()
   // 去除命名空间，如 'openai/gpt-4o' -> 'gpt-4o'
   const bare = trimmed.includes('/') ? trimmed.slice(trimmed.lastIndexOf('/') + 1) : trimmed
   // 去除常见包装后缀并去除 free 标识
@@ -172,10 +184,10 @@ export function matchModel(
   modelName: string,
   catalog: ModelsDevEntry[]
 ): MatchResult {
-  // 规则：如果模型ID或别名中包含 free，先去掉 free 后再使用 models.dev 匹配元数据
+  // 规则：如果模型ID或别名中包含 free，先去掉 free 后再使用 models.dev 匹配元数据；同时去除平台倍率标签
   const strippedId = stripFree(modelId)
-  const strippedName = stripFree(modelName)
-  const hadFree = (strippedId && strippedId !== modelId) || (strippedName && strippedName !== modelName)
+  const strippedName = stripFree(stripRateSuffix(modelName))
+  const hadFree = (strippedId && strippedId !== modelId) || (stripFree(modelName) !== modelName)
 
   const effectiveId = strippedId || modelId
   const effectiveName = strippedName || modelName
@@ -227,14 +239,26 @@ export function matchModel(
   }
 
   // ==========================================
-  // 优先级 2：如果匹配不到就使用模型别名（已去除 free）去匹配
+  // 优先级 2：如果匹配不到就使用模型别名（已去除 free 和平台倍率）去匹配
   // ==========================================
   if (effectiveName && effectiveName.trim() && effectiveName !== effectiveId) {
     const aliasExactCandidates = catalog.filter(m => m.name.toLowerCase() === effectiveName.toLowerCase() || (modelName && m.name.toLowerCase() === modelName.toLowerCase()))
     hit = pickBestEntry(aliasExactCandidates)
 
     if (!hit) {
-      const aliasCleanCandidates = catalog.filter(m => cleanId(m.name) === rawNameClean || cleanId(m.id) === rawNameClean)
+      const aliasCleanCandidates = catalog.filter(m => {
+        const mNameClean = cleanId(m.name)
+        const mIdClean = cleanId(m.id)
+        if (mNameClean === rawNameClean || mIdClean === rawNameClean) return true
+        // 字母数字纯净归一化对比（消除连字符、点号、空格差异，如 qwen-3.8-max 匹配 qwen3.8-max）
+        const normA = rawNameClean.replace(/[^a-z0-9]/g, '')
+        if (normA && normA.length >= 3) {
+          if (mNameClean.replace(/[^a-z0-9]/g, '') === normA || mIdClean.replace(/[^a-z0-9]/g, '') === normA) {
+            return true
+          }
+        }
+        return false
+      })
       hit = pickBestEntry(aliasCleanCandidates)
     }
 

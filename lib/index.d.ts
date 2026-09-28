@@ -12,6 +12,10 @@ declare function buildDshReasoning(availableLevels?: string[], defaultLevel?: st
   }>;
   defaultEffort: string;
 } | undefined;
+/**
+ * 供应商 Key 宽容归一化对比，兼容 .models 后缀与大小写变体
+ */
+declare function isSameProviderKey(groupKey?: string, targetKey?: string): boolean;
 declare function apply(ctx: Context): void;
 //#endregion
-export { apply, buildDshReasoning, inject, name };
+export { apply, buildDshReasoning, inject, isSameProviderKey, name };

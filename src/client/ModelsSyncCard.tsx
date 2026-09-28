@@ -454,7 +454,7 @@ export const ModelsSyncCard: React.FC<ModelsSyncCardProps> = ({ as = 'div', ctx 
                               <span style={styles.badgeSuccess} title={model.testMessage}>🟢 正常 {model.testMessage}</span>
                             )}
                             {model.testStatus === 'failed' && (
-                              <span style={styles.badgeFailed} title={model.testMessage}>🔴 异常 {model.testMessage}</span>
+                              <span style={styles.badgeFailed}>🔴 异常</span>
                             )}
                             {model.testStatus === 'testing' && (
                               <span style={styles.badgeTesting}>🟡 检测中...</span>
@@ -545,7 +545,14 @@ export const ModelsSyncCard: React.FC<ModelsSyncCardProps> = ({ as = 'div', ctx 
                           </div>
                         </div>
 
-                        {/* 第四行：同族回退匹配提示说明 */}
+                        {/* 第四行：测活异常详细错误信息（严格显示在推理等级下面） */}
+                        {model.testStatus === 'failed' && model.testMessage && (
+                          <div style={styles.errorNotice}>
+                            ⚠️ {model.testMessage}
+                          </div>
+                        )}
+
+                        {/* 第五行：同族回退匹配提示说明 */}
                         {model.fallbackNote && (
                           <div style={styles.fallbackNotice}>
                             💡 {model.fallbackNote}
@@ -827,12 +834,19 @@ const styles: Record<string, React.CSSProperties> = {
     border: '0.5px solid rgba(239, 68, 68, 0.3)',
     borderRadius: '4px',
     padding: '1px 6px',
-    maxWidth: '450px',
-    overflow: 'hidden',
-    textOverflow: 'ellipsis',
-    whiteSpace: 'nowrap',
     display: 'inline-block',
     verticalAlign: 'middle',
+  },
+  errorNotice: {
+    marginTop: '6px',
+    padding: '6px 10px',
+    fontSize: '12px',
+    lineHeight: '1.4',
+    color: '#ef4444',
+    backgroundColor: 'rgba(239, 68, 68, 0.08)',
+    border: '0.5px solid rgba(239, 68, 68, 0.25)',
+    borderRadius: '6px',
+    wordBreak: 'break-word',
   },
   badgeTesting: {
     fontSize: '11px',

@@ -42,6 +42,19 @@ export function buildDshReasoning(
 }
 
 /**
+ * 供应商 Key 宽容归一化对比，兼容 .models 后缀与大小写变体
+ */
+export function isSameProviderKey(groupKey?: string, targetKey?: string): boolean {
+  if (!groupKey || !targetKey) return false
+  if (groupKey === targetKey) return true
+  const normA = groupKey.toLowerCase().replace(/\.models$/i, '').trim()
+  const normB = targetKey.toLowerCase().replace(/\.models$/i, '').trim()
+  if (normA === normB) return true
+  if (normA.endsWith(normB) || normB.endsWith(normA)) return true
+  return false
+}
+
+/**
  * 安全解析运行时 LLM 核心服务，严格防止未声明 inject 时 Cordis 抛出拦截异常
  */
 function resolveLlm(context: any): any {
@@ -277,7 +290,7 @@ export function apply(ctx: Context): void {
 
           let updatedCount = 0
           for (const group of cachedGroups) {
-            if (targetProviderKey && group.key !== targetProviderKey) {
+            if (targetProviderKey && !isSameProviderKey(group.key, targetProviderKey)) {
               continue
             }
             for (const model of group.models) {
@@ -346,7 +359,7 @@ export function apply(ctx: Context): void {
 
           const itemsToTest: { model: ModelInfo; providerId: string }[] = []
           for (const group of cachedGroups) {
-            if (targetProviderKey && group.key !== targetProviderKey) continue
+            if (targetProviderKey && !isSameProviderKey(group.key, targetProviderKey)) continue
             const providerId = resolveProviderId(group.key, availableProviders)
             for (const model of group.models) {
               itemsToTest.push({ model, providerId })
@@ -358,7 +371,7 @@ export function apply(ctx: Context): void {
           const resultMap = new Map(testResults.map(r => [r.modelId, r]))
 
           for (const group of cachedGroups) {
-            if (targetProviderKey && group.key !== targetProviderKey) continue
+            if (targetProviderKey && !isSameProviderKey(group.key, targetProviderKey)) continue
             for (const m of group.models) {
               const r = resultMap.get(m.id)
               if (r) {

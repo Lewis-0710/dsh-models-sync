@@ -18,7 +18,8 @@ export interface ProbeOptions {
  * 动态根据供应商组 Key 解析对应的 DSH LLM Provider ID
  */
 export function resolveProviderId(groupKey: string, availableProviders: string[] = []): string {
-  const cleanKey = (groupKey || '').toLowerCase()
+  const normalizedKey = (groupKey || '').replace(/\.models$/i, '')
+  const cleanKey = normalizedKey.toLowerCase()
 
   // 1. 如果运行时已注册的列表中有完全一致的，直接采用
   const exact = availableProviders.find(p => p.toLowerCase() === cleanKey)
@@ -134,6 +135,58 @@ export function extractContentError(text: string): string | undefined {
 }
 
 /**
+ * 提炼并格式化错误信息，去除杂乱的原始嵌套 JSON 与内部堆栈，转换为人类可读的友好提示
+ */
+export function simplifyErrorMessage(raw: string): string {
+  if (!raw) return '调用失败'
+  const trimmed = raw.trim()
+
+  // 1. Qoder 10605 排队或不可用
+  if (/10605|serviceAvailable.*false|isQueued/i.test(trimmed)) {
+    return 'Qoder 上游服务当前排队或暂不可用 (错误码 10605)，请稍后重试'
+  }
+  // 2. Qoder 105 登录失效
+  if (/105|Login expired/i.test(trimmed)) {
+    return 'Qoder 登录已失效或 PAT 不可用 (错误码 105)，请前往 Qoder 设置重新配置'
+  }
+  // 3. Trae 4008 额度耗尽
+  if (/4008|可用额度已耗尽|额度已耗尽/i.test(trimmed)) {
+    return '[Trae 错误]: 当前 Trae 账号可用额度已耗尽，请前往 Trae 充值或升级套餐 (错误码 4008)'
+  }
+  // 4. WorkBuddy 11133 integer_below_min_value
+  if (/11133|integer_below_min_value/i.test(trimmed)) {
+    return '上游参数校验限制 (11133)，需提供更高的 max_tokens'
+  }
+  // 5. 超时
+  if (/aborted|timeout|timed out/i.test(trimmed)) {
+    return '请求超时未响应，请检查上游网络连接'
+  }
+
+  // 6. 如果是嵌套 JSON 字符串，尝试递归解开提取 message
+  try {
+    const jsonMatch = trimmed.match(/\{[\s\S]*\}/)
+    if (jsonMatch) {
+      let parsed = JSON.parse(jsonMatch[0])
+      while (typeof parsed?.message === 'string' && parsed.message.startsWith('{')) {
+        try { parsed = JSON.parse(parsed.message) } catch { break }
+      }
+      const code = parsed?.code || parsed?.error?.code
+      const msg = parsed?.message || parsed?.error?.message || parsed?.error
+      if (code && msg && !/\{/.test(String(msg))) return `异常 (${code}): ${msg}`
+      if (msg && !/\{/.test(String(msg))) return String(msg)
+    }
+  } catch {}
+
+  // 7. 去除常见无用错误前缀
+  const cleaned = trimmed
+    .replace(/^Error:\s*/i, '')
+    .replace(/^QoderLlmError:\s*/i, '')
+    .replace(/^LlmError:\s*/i, '')
+
+  return cleaned.length > 120 ? `${cleaned.slice(0, 120)}...` : cleaned
+}
+
+/**
  * 通过 DSH LLM 运行时真实发送探测请求
  */
 export async function probeSingleModelWithLlm(
@@ -148,7 +201,7 @@ export async function probeSingleModelWithLlm(
     const controller = new AbortController()
     const timer = setTimeout(() => controller.abort(), timeoutMs)
 
-    // 发起极简真实请求进行测活（maxTokens=5，保证耗费极低）
+    // 发起极简真实请求进行测活（maxTokens=20，彻底满足 WorkBuddy 国际版 GPT 系列最小 16 的校验下限）
     const stream = llm.stream({
       provider: providerId,
       model: model.id,
@@ -159,7 +212,7 @@ export async function probeSingleModelWithLlm(
           content: [{ type: 'text', text: 'hi' }],
         },
       ],
-      maxTokens: 5,
+      maxTokens: 20,
       signal: controller.signal,
     })
 
@@ -218,7 +271,7 @@ export async function probeSingleModelWithLlm(
         providerId,
         success: false,
         latencyMs: Date.now() - startTime,
-        message: finishError,
+        message: simplifyErrorMessage(finishError),
       }
     }
 
@@ -252,7 +305,7 @@ export async function probeSingleModelWithLlm(
         providerId,
         success: false,
         latencyMs: Date.now() - startTime,
-        message: errContentError,
+        message: simplifyErrorMessage(errContentError),
       }
     }
     return {
@@ -260,7 +313,7 @@ export async function probeSingleModelWithLlm(
       providerId,
       success: false,
       latencyMs: Date.now() - startTime,
-      message: msg.includes('aborted') ? '请求超时未响应' : msg,
+      message: simplifyErrorMessage(msg.includes('aborted') ? '请求超时未响应' : msg),
     }
   }
 }

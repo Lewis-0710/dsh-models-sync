@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
-import { resolveProviderId, probeSingleModel, probeModels } from '../src/probe.ts'
+import { resolveProviderId, probeSingleModel, probeModels, simplifyErrorMessage } from '../src/probe.ts'
+import { isSameProviderKey } from '../src/index.ts'
 import type { ModelInfo } from '../src/types.ts'
 
 describe('模型真实测活引擎测试', () => {
@@ -15,10 +16,14 @@ describe('模型真实测活引擎测试', () => {
     // 2. WorkBuddy 国际版与国内版
     expect(resolveProviderId('workbuddy.ai', available)).toBe('workbuddy-ai')
     expect(resolveProviderId('workbuddy-ai.8671db05', available)).toBe('workbuddy-ai')
+    expect(resolveProviderId('workbuddy-ai.models', available)).toBe('workbuddy-ai')
     expect(resolveProviderId('workbuddy.cn', available)).toBe('workbuddy')
 
     // 3. Qoder 国际版与国内版
     expect(resolveProviderId('qoder.ai', available)).toBe('qoder-global')
+    expect(resolveProviderId('qoder-global', available)).toBe('qoder-global')
+    expect(resolveProviderId('qoder-global.models', available)).toBe('qoder-global')
+    expect(resolveProviderId('qoder.models', available)).toBe('qoder')
     expect(resolveProviderId('qoder.cn', available)).toBe('qoder')
 
     // 4. 自定义聚合与官方直连
@@ -181,6 +186,32 @@ describe('模型真实测活引擎测试', () => {
 
     expect(result.success).toBe(false)
     expect(result.message).toContain('未检测到可用的 LLM 运行时')
+  })
+
+  it('错误信息提炼简化测试 (simplifyErrorMessage)', () => {
+    // 1. Qoder 10605 排队
+    const qoder10605 = 'Qoder service returned upstream error status 403: {"code":"403","message":"{\\"code\\":\\"10605\\",\\"message\\":\\"{\\\\\\"isQueued\\\\\\":true,\\\\\\"modelKey\\\\\\":\\\\\\"auto\\\\\\",\\\\\\"queueCount\\\\\\":0,\\\\\\"queueType\\\\\\":\\\\\\"p3\\\\\\",\\\\\\"retryAfterSeconds\\\\\\":27,\\\\\\"serviceAvailable\\\\\\":false,\\\\\\"waitTime\\\\\\":27}\\"}"}'
+    expect(simplifyErrorMessage(qoder10605)).toContain('Qoder 上游服务当前排队或暂不可用 (错误码 10605)')
+
+    // 2. Qoder 105 登录过期
+    const qoder105 = 'Qoder service returned upstream error status 403: {"code":"105","message":"Login expired"}'
+    expect(simplifyErrorMessage(qoder105)).toContain('Qoder 登录已失效或 PAT 不可用 (错误码 105)')
+
+    // 3. WorkBuddy 11133 integer_below_min_value
+    const wb11133 = '异常 400: {"message":"workbuddy upstream client (http 400): {\\"code\\":11133,\\"message\\":\\"integer_below_min_value: max_tokens\\"}"}'
+    expect(simplifyErrorMessage(wb11133)).toContain('上游参数校验限制 (11133)')
+
+    // 4. Trae 4008 额度耗尽
+    const trae4008 = '当前 Trae 账号可用额度已耗尽 (错误码 4008)'
+    expect(simplifyErrorMessage(trae4008)).toContain('4008')
+  })
+
+  it('供应商 Key 宽容对比测试 (isSameProviderKey)', () => {
+    expect(isSameProviderKey('qoder-global.models', 'qoder-global')).toBe(true)
+    expect(isSameProviderKey('qoder-global', 'qoder-global.models')).toBe(true)
+    expect(isSameProviderKey('workbuddy-ai.models', 'workbuddy-ai')).toBe(true)
+    expect(isSameProviderKey('trae.cn', 'trae.cn')).toBe(true)
+    expect(isSameProviderKey('qoder-global', 'trae-global')).toBe(false)
   })
 })
 
