@@ -51,7 +51,7 @@ describe('思考等级解析与自动默认选中测试', () => {
     expect(levels).not.toContain('off')
 
     const current = extractCurrentReasoningLevel(raw, levels)
-    expect(current).toBe('high') // 自动推荐默认等级为 high
+    expect(current).toBe('medium') // 自动推荐平衡稳妥的默认等级为 medium
   })
 
   it('对于不支持思考等级的模型（如 LongCat-2.0 ），正确识别为 off 且列表为空', () => {
@@ -65,7 +65,37 @@ describe('思考等级解析与自动默认选中测试', () => {
     expect(current).toBe('off')
   })
 
-  it('applyMatchToModel 动态合并 models.dev 的思考等级并自动选中默认等级', () => {
+  it('对于仅声明常开思考但无分级档位的模型（如 big-pickle ），正确识别为无分级且不塞入假数据', () => {
+    const raw = {
+      id: 'big-pickle',
+      reasoningSupported: true,
+      reasoning: { supports: true },
+    }
+    const levels = extractAvailableReasoningLevels(raw)
+    expect(levels).toEqual([])
+    const current = extractCurrentReasoningLevel(raw, levels)
+    expect(current).toBe('off')
+  })
+
+  it('对于自定义分级档位的模型（如 Qoder qfmodel: low, medium, xhigh），保持真实档位且绝不选 high', () => {
+    const raw = {
+      id: 'qfmodel',
+      name: 'Qwen3.8-Flash',
+      reasoningSupported: true,
+      thinkingLevels: ['low', 'medium', 'xhigh'],
+      reasoning: {
+        supports: true,
+        supportedEfforts: ['low', 'medium', 'xhigh'],
+      },
+    }
+    const levels = extractAvailableReasoningLevels(raw)
+    expect(levels).toEqual(['low', 'medium', 'xhigh'])
+    expect(levels).not.toContain('high')
+    const current = extractCurrentReasoningLevel(raw, levels)
+    expect(current).toBe('medium')
+  })
+
+  it('applyMatchToModel 动态合并 models.dev 的思考等级并自动选中平衡默认等级 medium', () => {
     const model: ModelInfo = {
       id: 'test-model',
       name: 'Test Model',
@@ -88,6 +118,6 @@ describe('思考等级解析与自动默认选中测试', () => {
 
     applyMatchToModel(model, match)
     expect(model.availableReasoningLevels).toEqual(['minimal', 'low', 'medium', 'high'])
-    expect(model.reasoningLevel).toBe('high')
+    expect(model.reasoningLevel).toBe('medium')
   })
 })

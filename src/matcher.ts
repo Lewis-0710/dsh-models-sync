@@ -1,4 +1,5 @@
 import type { ModelsDevEntry, ModelInfo } from './types.ts'
+import { getNativeModelReasoning } from './native-capabilities.ts'
 
 /**
  * 去除模型 ID 或别名中的 free 标识
@@ -361,7 +362,7 @@ export function matchModel(
 /**
  * 将匹配结果的数据合并进 ModelInfo 中
  */
-export function applyMatchToModel(model: ModelInfo, match: MatchResult): boolean {
+export function applyMatchToModel(model: ModelInfo, match: MatchResult, providerKey?: string): boolean {
   if (!match.entry) {
     model.matchedVia = 'none'
     // 即使未匹配到 models.dev，根据业界通用的视觉/多模态特征标识（如 vl, vision, omni 等）自适应推导
@@ -409,25 +410,32 @@ export function applyMatchToModel(model: ModelInfo, match: MatchResult): boolean
   }
   model.input = mergedInputs
 
-  // 根据 models.dev 与现有支持动态计算实际支持的思考等级
-  const devLevels = Array.isArray(entry.thinkingLevels) ? entry.thinkingLevels : []
-  const localLevels = Array.isArray(model.availableReasoningLevels) ? model.availableReasoningLevels : []
-  const mergedLevels = Array.from(new Set([...devLevels, ...localLevels]))
-    .map(String)
-    .filter(lvl => lvl && !['off', 'false', 'none', 'null'].includes(lvl.toLowerCase()))
+  // 核心原则：本地原生连接器能力（如 OpenCode, Qoder 网关）为最高权威！
+  // 1. 若宿主连接器对该模型有原生契约（例如 OpenCode 官方元数据中 effortValues 为空数组，Qoder 官方网关下发 low/medium/xhigh）
+  const nativeCap = providerKey ? getNativeModelReasoning(providerKey, model.id) : undefined
 
-  model.availableReasoningLevels = mergedLevels
+  let effectiveLevels: string[] = []
+  if (nativeCap) {
+    effectiveLevels = nativeCap.effortValues || []
+  } else {
+    // 2. 本地无显式限制时，才采用 models.dev 的 thinkingLevels
+    const devLevels = (Array.isArray(entry.thinkingLevels) ? entry.thinkingLevels : [])
+      .map(String)
+      .filter(lvl => lvl && !['off', 'false', 'none', 'null'].includes(lvl.toLowerCase()))
+    effectiveLevels = devLevels
+  }
 
-  if (mergedLevels.length > 0) {
-    // 自动选中默认等级：如果当前已有选中的有效等级，保留；否则自动选中默认推荐等级
-    if (model.reasoningLevel && model.reasoningLevel !== 'off' && mergedLevels.includes(String(model.reasoningLevel))) {
-      // 保持当前有效选择
-    } else if (mergedLevels.includes('high')) {
-      model.reasoningLevel = 'high'
-    } else if (mergedLevels.includes('medium')) {
+  model.availableReasoningLevels = effectiveLevels
+
+  if (effectiveLevels.length > 0) {
+    if (model.reasoningLevel && model.reasoningLevel !== 'off' && effectiveLevels.includes(String(model.reasoningLevel).toLowerCase())) {
+      model.reasoningLevel = String(model.reasoningLevel).toLowerCase()
+    } else if (effectiveLevels.includes('medium')) {
       model.reasoningLevel = 'medium'
+    } else if (effectiveLevels.includes('low')) {
+      model.reasoningLevel = 'low'
     } else {
-      model.reasoningLevel = mergedLevels[0] || 'low'
+      model.reasoningLevel = effectiveLevels[0]
     }
   } else {
     model.reasoningLevel = 'off'

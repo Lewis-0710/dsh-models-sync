@@ -318,8 +318,8 @@ export async function saveModelsToSettings(groups: ProviderGroupInfo[]): Promise
           }
         }
         if (currentEffort === 'off' && hasReasoning) {
-          if (levels.includes('high')) currentEffort = 'high'
-          else if (levels.includes('medium')) currentEffort = 'medium'
+          if (levels.includes('medium')) currentEffort = 'medium'
+          else if (levels.includes('low')) currentEffort = 'low'
           else currentEffort = levels[0]
         }
 
@@ -330,9 +330,14 @@ export async function saveModelsToSettings(groups: ProviderGroupInfo[]): Promise
         itemNode.set('thinkingLevels', levels)
         itemNode.set('supportedEfforts', levels)
 
-        // 3. 写入选中的默认值
-        itemNode.set('reasoningEffort', currentEffort)
-        itemNode.set('reasoningLevel', currentEffort)
+        // 3. 写入选中的默认值（关键：若不支持分级思考，绝对不写入 reasoningEffort，避免 DSH LLM 请求校验报错）
+        if (hasReasoning && currentEffort !== 'off') {
+          itemNode.set('reasoningEffort', currentEffort)
+          itemNode.set('reasoningLevel', currentEffort)
+        } else {
+          if (itemNode.delete) itemNode.delete('reasoningEffort')
+          itemNode.set('reasoningLevel', 'off')
+        }
 
         // 4. 写入/更新标准嵌套 reasoning 对象
         let rNode = itemNode.get ? itemNode.get('reasoning') : itemNode['reasoning']
@@ -341,20 +346,26 @@ export async function saveModelsToSettings(groups: ProviderGroupInfo[]): Promise
           itemNode.set('reasoning', rNode)
         }
         rNode.set('supports', hasReasoning)
-        rNode.set('defaultEffort', currentEffort === 'off' ? null : currentEffort)
+        rNode.set('defaultEffort', (!hasReasoning || currentEffort === 'off') ? null : currentEffort)
         rNode.set('supportedEfforts', levels)
         rNode.set('supported', levels)
         if (hasReasoning) {
           rNode.set('canDisableThinking', true)
+        } else {
+          if (rNode.delete) rNode.delete('canDisableThinking')
         }
 
         // 5. 若存在 reasoningEfforts 映射对象格式，同步维护
         if (itemNode.has && itemNode.has('reasoningEfforts')) {
-          const effortsMap: Record<string, string | null> = { off: null }
-          for (const lvl of levels) {
-            effortsMap[lvl] = lvl
+          if (hasReasoning) {
+            const effortsMap: Record<string, string | null> = { off: null }
+            for (const lvl of levels) {
+              effortsMap[lvl] = lvl
+            }
+            itemNode.set('reasoningEfforts', effortsMap)
+          } else {
+            if (itemNode.delete) itemNode.delete('reasoningEfforts')
           }
-          itemNode.set('reasoningEfforts', effortsMap)
         }
       }
     }
@@ -468,8 +479,8 @@ export async function syncModelsToStateFiles(groups: ProviderGroupInfo[]): Promi
             }
           }
           if (currentEffort === 'off' && hasReasoning) {
-            if (levels.includes('high')) currentEffort = 'high'
-            else if (levels.includes('medium')) currentEffort = 'medium'
+            if (levels.includes('medium')) currentEffort = 'medium'
+            else if (levels.includes('low')) currentEffort = 'low'
             else currentEffort = levels[0]
           }
 
@@ -477,12 +488,18 @@ export async function syncModelsToStateFiles(groups: ProviderGroupInfo[]): Promi
             item.reasoningSupported = true
             item.thinkingLevels = levels
             item.supportedEfforts = levels
-            item.reasoningEffort = currentEffort
+            if (currentEffort !== 'off') {
+              item.reasoningEffort = currentEffort
+              item.reasoningLevel = currentEffort
+            } else {
+              delete item.reasoningEffort
+              item.reasoningLevel = 'off'
+            }
             item.reasoning = {
               supports: true,
               supported: levels,
               supportedEfforts: levels,
-              defaultEffort: currentEffort === 'off' ? (levels.includes('high') ? 'high' : levels[0]) : currentEffort,
+              defaultEffort: currentEffort === 'off' ? (levels.includes('medium') ? 'medium' : levels[0]) : currentEffort,
               canDisableThinking: true,
             }
 
@@ -502,10 +519,14 @@ export async function syncModelsToStateFiles(groups: ProviderGroupInfo[]): Promi
             item.reasoningEfforts = effortsMap
           } else {
             item.reasoningSupported = false
+            delete item.reasoningEffort
+            item.reasoningLevel = 'off'
             if (item.reasoning && typeof item.reasoning === 'object') {
               item.reasoning.supports = false
               delete item.reasoning.supported
               delete item.reasoning.supportedEfforts
+              delete item.reasoning.defaultEffort
+              delete item.reasoning.canDisableThinking
             }
             delete item.reasoningEfforts
             delete item.thinkingLevels

@@ -55,15 +55,6 @@ export function extractAvailableReasoningLevels(rawModel: Record<string, any>): 
     }
   }
 
-  // 6. 如果标记了支持思考但没列出具体等级，兜底提供标准等级 [low, medium, high]
-  if (levels.size === 0) {
-    if (rawModel.reasoningSupported === true || rawModel.reasoning?.supports === true) {
-      levels.add('low')
-      levels.add('medium')
-      levels.add('high')
-    }
-  }
-
   // 过滤无效或关闭状态标记
   levels.delete('off')
   levels.delete('false')
@@ -84,25 +75,25 @@ export function extractCurrentReasoningLevel(
 
   // 1. 显式配置了 defaultEffort
   if (rawModel.reasoning?.defaultEffort && typeof rawModel.reasoning.defaultEffort === 'string') {
-    const val = rawModel.reasoning.defaultEffort.trim()
+    const val = rawModel.reasoning.defaultEffort.trim().toLowerCase()
     if (availableLevels.includes(val) || val === 'off') return val
   }
 
   // 2. 显式配置了 reasoningEffort 或 reasoningLevel
   if (rawModel.reasoningEffort && typeof rawModel.reasoningEffort === 'string') {
-    const val = rawModel.reasoningEffort.trim()
+    const val = rawModel.reasoningEffort.trim().toLowerCase()
     if (availableLevels.includes(val) || val === 'off') return val
   }
   if (rawModel.reasoningLevel && typeof rawModel.reasoningLevel === 'string') {
-    const val = rawModel.reasoningLevel.trim()
+    const val = rawModel.reasoningLevel.trim().toLowerCase()
     if (availableLevels.includes(val) || val === 'off') return val
   }
 
-  // 3. 如果有支持的思考等级，自动选中默认等级
+  // 3. 如果有支持的思考等级，按稳妥顺序选择默认等级：优先 medium，次选 low，再选首个可用档位
   if (availableLevels.length > 0) {
-    if (availableLevels.includes('high')) return 'high'
     if (availableLevels.includes('medium')) return 'medium'
-    return availableLevels[0] || 'low'
+    if (availableLevels.includes('low')) return 'low'
+    return availableLevels[0] || 'off'
   }
 
   return 'off'

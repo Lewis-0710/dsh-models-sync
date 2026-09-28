@@ -144,23 +144,12 @@ export function apply(ctx: Context): void {
         if (!info) return info
 
         const config = findModelReasoningConfig(provider, model)
-        if (config && config.availableLevels.length > 0) {
-          const reasoning = buildDshReasoning(config.availableLevels, config.defaultLevel)
-          if (reasoning) {
-            if (!info.reasoning || !Array.isArray(info.reasoning.efforts) || info.reasoning.efforts.length === 0) {
-              info.reasoning = reasoning
-            } else {
-              const existingIds = new Set(info.reasoning.efforts.map((e: any) => e.id))
-              for (const effort of reasoning.efforts) {
-                if (!existingIds.has(effort.id)) {
-                  info.reasoning.efforts.push(effort)
-                  existingIds.add(effort.id)
-                }
-              }
-              if (config.defaultLevel && existingIds.has(config.defaultLevel)) {
-                info.reasoning.defaultEffort = config.defaultLevel
-              }
-            }
+        if (config && config.availableLevels.length > 0 && info.reasoning && Array.isArray(info.reasoning.efforts) && info.reasoning.efforts.length > 0) {
+          const validIds = new Set(info.reasoning.efforts.map((e: any) => e.id))
+          if (config.defaultLevel && validIds.has(config.defaultLevel)) {
+            info.reasoning.defaultEffort = config.defaultLevel
+          } else if (!info.reasoning.defaultEffort || !validIds.has(info.reasoning.defaultEffort)) {
+            info.reasoning.defaultEffort = validIds.has('medium') ? 'medium' : (validIds.has('low') ? 'low' : info.reasoning.efforts[0]?.id)
           }
         }
         return info
@@ -176,23 +165,12 @@ export function apply(ctx: Context): void {
 
         const provider = registration?.provider?.id
         const config = findModelReasoningConfig(provider, model)
-        if (config && config.availableLevels.length > 0) {
-          const reasoning = buildDshReasoning(config.availableLevels, config.defaultLevel)
-          if (reasoning) {
-            if (!info.reasoning || !Array.isArray(info.reasoning.efforts) || info.reasoning.efforts.length === 0) {
-              info.reasoning = reasoning
-            } else {
-              const existingIds = new Set(info.reasoning.efforts.map((e: any) => e.id))
-              for (const effort of reasoning.efforts) {
-                if (!existingIds.has(effort.id)) {
-                  info.reasoning.efforts.push(effort)
-                  existingIds.add(effort.id)
-                }
-              }
-              if (config.defaultLevel && existingIds.has(config.defaultLevel)) {
-                info.reasoning.defaultEffort = config.defaultLevel
-              }
-            }
+        if (config && config.availableLevels.length > 0 && info.reasoning && Array.isArray(info.reasoning.efforts) && info.reasoning.efforts.length > 0) {
+          const validIds = new Set(info.reasoning.efforts.map((e: any) => e.id))
+          if (config.defaultLevel && validIds.has(config.defaultLevel)) {
+            info.reasoning.defaultEffort = config.defaultLevel
+          } else if (!info.reasoning.defaultEffort || !validIds.has(info.reasoning.defaultEffort)) {
+            info.reasoning.defaultEffort = validIds.has('medium') ? 'medium' : (validIds.has('low') ? 'low' : info.reasoning.efforts[0]?.id)
           }
         }
         return info
@@ -256,7 +234,7 @@ export function apply(ctx: Context): void {
           for (const group of cachedGroups) {
             for (const model of group.models) {
               const match = matchModel(model.id, model.name, catalog)
-              applyMatchToModel(model, match)
+              applyMatchToModel(model, match, group.key)
             }
           }
 
@@ -295,7 +273,7 @@ export function apply(ctx: Context): void {
             }
             for (const model of group.models) {
               const match = matchModel(model.id, model.name, catalog)
-              applyMatchToModel(model, match)
+              applyMatchToModel(model, match, group.key)
               updatedCount++
             }
           }

@@ -43,9 +43,6 @@ function parseRawApi(data: Record<string, any>): ModelsDevEntry[] {
             }
           }
         }
-        if (thinkingLevels.length === 0) {
-          thinkingLevels.push('low', 'medium', 'high')
-        }
       }
 
       result.push({
