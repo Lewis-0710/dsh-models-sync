@@ -153,9 +153,12 @@ export function simplifyErrorMessage(raw: string): string {
   if (/4008|可用额度已耗尽|额度已耗尽/i.test(trimmed)) {
     return '[Trae 错误]: 当前 Trae 账号可用额度已耗尽，请前往 Trae 充值或升级套餐 (错误码 4008)'
   }
-  // 4. WorkBuddy 11133 integer_below_min_value
-  if (/11133|integer_below_min_value/i.test(trimmed)) {
-    return '上游参数校验限制 (11133)，需提供更高的 max_tokens'
+  // 4. WorkBuddy 11133 处理
+  if (/integer_below_min_value.*max.*token|max.*token.*integer_below_min_value/i.test(trimmed)) {
+    return '上游参数下限校验限制 (11133: integer_below_min_value)'
+  }
+  if (/11133/i.test(trimmed)) {
+    return '上游模型参数被拒绝 (错误码 11133: model_param_invalid)'
   }
   // 5. 超时
   if (/aborted|timeout|timed out/i.test(trimmed)) {
@@ -187,6 +190,16 @@ export function simplifyErrorMessage(raw: string): string {
 }
 
 /**
+ * 判断是否属于 GPT 系列模型（支持大小写与命名空间前缀）
+ */
+export function isGptFamilyModel(modelId: string, modelName?: string): boolean {
+  const id = (modelId || '').toLowerCase()
+  const name = (modelName || '').toLowerCase()
+  const gptPattern = /(^|[\/\-_])(gpt|chatgpt)([\/\-_]|\d|$)/i
+  return gptPattern.test(id) || gptPattern.test(name)
+}
+
+/**
  * 通过 DSH LLM 运行时真实发送探测请求
  */
 export async function probeSingleModelWithLlm(
@@ -201,7 +214,12 @@ export async function probeSingleModelWithLlm(
     const controller = new AbortController()
     const timer = setTimeout(() => controller.abort(), timeoutMs)
 
-    // 发起极简真实请求进行测活（maxTokens=20，彻底满足 WorkBuddy 国际版 GPT 系列最小 16 的校验下限）
+    // 规则：只有 GPT 系列模型增加 maxTokens（设为 32 充裕跨过 16 的下限校验阈值，输入为 'hi' 实际遇到标点即停止，实际消耗仅 2~3 个 token）；
+    // 其他非 GPT 模型严格使用 5，保证极低开销
+    const isGpt = isGptFamilyModel(model.id, model.name)
+    const targetMaxTokens = isGpt ? 32 : 5
+
+    // 发起极简真实请求进行测活（双保险传入 maxTokens 与 max_tokens 字段兼容不同适配器层）
     const stream = llm.stream({
       provider: providerId,
       model: model.id,
@@ -212,7 +230,8 @@ export async function probeSingleModelWithLlm(
           content: [{ type: 'text', text: 'hi' }],
         },
       ],
-      maxTokens: 20,
+      maxTokens: targetMaxTokens,
+      max_tokens: targetMaxTokens,
       signal: controller.signal,
     })
 

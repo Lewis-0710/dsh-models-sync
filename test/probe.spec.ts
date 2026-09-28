@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { resolveProviderId, probeSingleModel, probeModels, simplifyErrorMessage } from '../src/probe.ts'
+import { resolveProviderId, probeSingleModel, probeModels, simplifyErrorMessage, isGptFamilyModel } from '../src/probe.ts'
 import { isSameProviderKey } from '../src/index.ts'
 import type { ModelInfo } from '../src/types.ts'
 
@@ -197,13 +197,38 @@ describe('模型真实测活引擎测试', () => {
     const qoder105 = 'Qoder service returned upstream error status 403: {"code":"105","message":"Login expired"}'
     expect(simplifyErrorMessage(qoder105)).toContain('Qoder 登录已失效或 PAT 不可用 (错误码 105)')
 
-    // 3. WorkBuddy 11133 integer_below_min_value
-    const wb11133 = '异常 400: {"message":"workbuddy upstream client (http 400): {\\"code\\":11133,\\"message\\":\\"integer_below_min_value: max_tokens\\"}"}'
-    expect(simplifyErrorMessage(wb11133)).toContain('上游参数校验限制 (11133)')
+    // 3. WorkBuddy 11133 处理
+    const wb11133Min = '异常 400: {"message":"workbuddy upstream client (http 400): {\\"code\\":11133,\\"message\\":\\"integer_below_min_value: max_tokens\\"}"}'
+    expect(simplifyErrorMessage(wb11133Min)).toContain('上游参数下限校验限制 (11133: integer_below_min_value)')
+
+    const wb11133Other = '异常 400: {"message":"workbuddy upstream client (http 400): {\\"code\\":11133,\\"message\\":\\"model_param_invalid\\"}"}'
+    expect(simplifyErrorMessage(wb11133Other)).toContain('上游模型参数被拒绝 (错误码 11133: model_param_invalid)')
 
     // 4. Trae 4008 额度耗尽
     const trae4008 = '当前 Trae 账号可用额度已耗尽 (错误码 4008)'
     expect(simplifyErrorMessage(trae4008)).toContain('4008')
+  })
+
+  it('GPT 系列模型精准识别测试 (isGptFamilyModel)', () => {
+    // 1. 常见 GPT 命名
+    expect(isGptFamilyModel('gpt-6-astra', 'GPT-6-Astra · x6.67')).toBe(true)
+    expect(isGptFamilyModel('gpt-5.6-terra', 'GPT-5.6-Terra')).toBe(true)
+    expect(isGptFamilyModel('gpt-5.6-sol', 'GPT-5.6-Sol')).toBe(true)
+    expect(isGptFamilyModel('gpt-5.6-luna', 'GPT-5.6-Luna')).toBe(true)
+    expect(isGptFamilyModel('gpt-5.5', 'GPT-5.5')).toBe(true)
+    expect(isGptFamilyModel('gpt-5.4', 'GPT-5.4')).toBe(true)
+    expect(isGptFamilyModel('gpt-5.3-codex', 'GPT-5.3-Codex')).toBe(true)
+    expect(isGptFamilyModel('openai/gpt-4o', 'GPT-4o')).toBe(true)
+    expect(isGptFamilyModel('chatgpt-4o-latest')).toBe(true)
+
+    // 2. 非 GPT 模型（应判定为 false，使用 maxTokens=5）
+    expect(isGptFamilyModel('deep-model', 'Deep · x3.33')).toBe(false)
+    expect(isGptFamilyModel('deepseek-v4.1-flash', 'Deepseek-V4.1-Flash')).toBe(false)
+    expect(isGptFamilyModel('claude-3-7-sonnet', 'Claude 3.7 Sonnet')).toBe(false)
+    expect(isGptFamilyModel('kimi-k3', 'Kimi-K3')).toBe(false)
+    expect(isGptFamilyModel('glm-5.3', 'GLM-5.3')).toBe(false)
+    expect(isGptFamilyModel('qwen3.8-max', 'Qwen3.8-Max')).toBe(false)
+    expect(isGptFamilyModel('auto', 'Auto')).toBe(false)
   })
 
   it('供应商 Key 宽容对比测试 (isSameProviderKey)', () => {
